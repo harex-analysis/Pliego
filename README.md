@@ -1,6 +1,6 @@
 # Pliego
 
-[**⬇ Descargar Pliego para Windows (.exe)**](https://github.com/harex-analysis/Pliego/releases/download/v1.9.2/Pliego-Setup-x64.exe) · [Otras descargas](https://github.com/harex-analysis/Pliego/releases/tag/v1.9.2)
+Descargar Pliego para Windows (.exe)**](https://github.com/harex-analysis/Pliego/releases/download/v1.9.2/Pliego-Setup-x64.exe) · [Otras descargas](https://github.com/harex-analysis/Pliego/releases/tag/v1.9.2)
 
 Lector local de cómics para Windows con giro de papel. Abre CBR, CBZ, RAR y ZIP sin convertir el archivo. La biblioteca guarda la página, el estado y la dirección de lectura de tus títulos.
 
