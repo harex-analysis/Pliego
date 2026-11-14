@@ -1,0 +1,4 @@
+* text=auto eol=lf
+licenses/** -text
+assets/Roboto-OFL.txt -text -whitespace
+vendor/torrent/libtorrent-LICENSE.txt -text -whitespace
