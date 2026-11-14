@@ -26,25 +26,21 @@ jobs:
       - run: npm run setup:win
       - run: npm run test:win
       - run: npm run release:win
-      - name: Verify and test extracted release
+      - name: Verify and test the installer
         shell: pwsh
         run: |
-          $dist = Join-Path $PWD 'dist/release'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $dist = Join-Path $PWD "dist/release/v$version"
           foreach ($entry in Get-Content (Join-Path $dist 'SHA256SUMS.txt')) {
             $hash,$file = $entry -split '  ',2
             if ((Get-FileHash -LiteralPath (Join-Path $dist $file) -Algorithm SHA256).Hash -ne $hash) {
               throw "Unexpected SHA-256 for $file"
             }
           }
-          $zip = Get-ChildItem $dist -Filter 'Pliego-*-windows-x64.zip' | Select-Object -First 1
-          $out = Join-Path $env:RUNNER_TEMP 'pliego-portable'
-          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $out
-          $env:PLIEGO_TEST_EXE = Join-Path $out 'Pliego-win32-x64/Pliego.exe'
-          npm run test:win
-          exit $LASTEXITCODE
+          & ./tests/installer.ps1 -Installer (Join-Path $dist 'Pliego-Setup-x64.exe')
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: github.event_name != 'pull_request'
         with:
           name: Pliego-Windows-x64
-          path: dist/release/
+          path: dist/release/v*/
           if-no-files-found: error

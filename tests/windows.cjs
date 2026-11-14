@@ -58,7 +58,7 @@ test('orígenes permitidos del magnet', () => {
   assert.throws(() => magnetLink(base + '&ws=https%3A%2F%2Fuser%3Apass%40example.org'), /fuente web/);
 });
 
-test('el ejecutable extraído abre y lee un CBZ', { skip: !installed, timeout: 60_000 }, async () => {
+test('el ejecutable distribuido abre y lee un CBZ', { skip: !installed, timeout: 60_000 }, async () => {
   const work = await mkdtemp(path.join(tmpdir(), 'pliego-portable-'));
   const profile = path.join(work, 'profile');
   let process;
@@ -91,6 +91,7 @@ test('el ejecutable extraído abre y lee un CBZ', { skip: !installed, timeout: 6
     await page.locator('.recent-title').getByText('Prueba portable', { exact: true }).waitFor();
     const saved = JSON.parse(await readFile(path.join(profile, 'reading.json'), 'utf8'));
     assert.equal(saved.books[0].page, 1);
+    execFileSync(python, ['-I', '-B', '-c', 'import libtorrent; assert libtorrent.version'], { windowsHide: true });
   } finally {
     await browser?.close().catch(() => {});
     if (process?.exitCode === null && process?.signalCode === null) {

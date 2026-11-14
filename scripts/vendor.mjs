@@ -51,9 +51,15 @@ export async function download({ name, url, sha256: expected }) {
   }
   const partial = file + '.' + randomUUID() + '.tmp';
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(180_000) });
-    if (!response.ok || !response.body) throw Error(name + ' (HTTP ' + response.status + ')');
-    await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
+    if (new URL(url).hostname === 'downloads.sourceforge.net') {
+      execFileSync('curl.exe', ['--fail', '--silent', '--show-error', '--location', '--retry', '2',
+        '--max-time', '120', '--proto', '=https', '--proto-redir', '=https', '--output', partial, url],
+      { stdio: 'inherit', windowsHide: true });
+    } else {
+      const response = await fetch(url, { signal: AbortSignal.timeout(180_000) });
+      if (!response.ok || !response.body) throw Error(name + ' (HTTP ' + response.status + ')');
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
+    }
     if (await sha256(partial) !== expected) throw Error('SHA-256 inesperado para ' + name);
     await rename(partial, file);
     return file;

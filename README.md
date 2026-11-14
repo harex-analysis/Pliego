@@ -1,14 +1,18 @@
 # Pliego
 
+[**⬇ Descargar Pliego para Windows (.exe)**](https://github.com/harex-analysis/Pliego/releases/download/v1.9.2/Pliego-Setup-x64.exe) · [Otras descargas](https://github.com/harex-analysis/Pliego/releases/tag/v1.9.2)
+
 Lector local de cómics para Windows con giro de papel. Abre CBR, CBZ, RAR y ZIP sin convertir el archivo. La biblioteca guarda la página, el estado y la dirección de lectura de tus títulos.
+
+Descarga y ejecuta **Pliego-Setup-x64.exe**. El instalador incluye todos los componentes y deja Pliego en el menú Inicio. Esta beta se probó en **Windows 11 x64** y va sin firma Authenticode, así que Windows puede mostrar un aviso según su configuración.
 
 ![Giro de página en Pliego con páginas originales de Eco nocturno](assets/giro-de-pagina.gif)
 
-## Descargar y abrir en Windows
+## Empezar a leer
 
-Pliego se distribuye como beta portable para Windows x64. En GitHub, descarga el ZIP de la sección **Releases**, verifica su SHA-256 con el archivo `SHA256SUMS.txt` y extrae la carpeta completa. Ejecuta `Pliego.exe` desde esa carpeta. La beta actual va sin firma Authenticode, por lo que Windows puede mostrar un aviso.
+Usa **Añadir archivos** o arrastra los cómics a la biblioteca. Haz clic en una portada para leer desde la ubicación original del archivo. Tu biblioteca y progreso se guardan en `%APPDATA%\pliego`.
 
-Usa **Añadir archivos** o arrastra los cómics a la biblioteca. Haz clic en una portada para leer desde la ubicación original del archivo. La biblioteca se guarda en `%APPDATA%\pliego`, incluso cuando mueves o actualizas la carpeta portable.
+En **Otras descargas** también encontrarás el ZIP portable y las sumas SHA-256. Para usar el ZIP, extrae la carpeta completa y abre `Pliego.exe`.
 
 - Mantén pulsada una esquina para levantar la hoja y arrástrala hacia el otro lado. Suelta después de un recorrido corto para devolverla a su sitio. También puedes arrastrar desde el interior de la página con la vista ajustada a la ventana. El visor muestra un consejo que se puede cerrar y se oculta al completar el primer giro por arrastre.
 - Las ilustraciones panorámicas participan en el giro como un pliego y vuelven a mostrarse como una sola imagen completa al terminar.

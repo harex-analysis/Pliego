@@ -1,13 +1,15 @@
-# Pliego 1.9.1 · Beta portable para Windows x64
+# Pliego 1.9.2 · Beta para Windows x64
 
-Extrae todo el ZIP y ejecuta `Pliego.exe` dentro de la carpeta extraída. Se ha probado en Windows 11 x64. El ejecutable de esta beta carece de firma Authenticode, por lo que Windows puede mostrar un aviso o bloquear su ejecución según la configuración. Comprueba el SHA-256 publicado en `SHA256SUMS.txt` junto al archivo ZIP.
+**Descarga `Pliego-Setup-x64.exe` y ábrelo.** El instalador incluye todos los componentes y agrega Pliego al menú Inicio y a la lista de aplicaciones de Windows. La instalación es para tu usuario y funciona sin conexión una vez descargada.
+
+También puedes usar `Pliego-1.9.2-windows-x64.zip` como versión portable. Extrae la carpeta completa y abre `Pliego.exe`. La beta se ha probado en Windows 11 x64. El instalador y el lector van sin firma Authenticode, así que Windows puede mostrar un aviso o bloquear su ejecución según la configuración. Las sumas de los archivos están en `SHA256SUMS.txt`.
 
 - Lector de CBR, CBZ, RAR y ZIP con giro de papel y modo manga.
 - Biblioteca local con Recientes, grupos, progreso, selección por rectángulo y movimiento de títulos entre Cómics y Mangas.
 - Descarga BitTorrent por magnet o info hash, con selección de tomos, opción de grupo y reanudación.
 - Límites de imágenes antes de decodificarlas y comprobación de espacio en discos locales. Runtime Python 3.13.18 y validación del archivo de aplicación empaquetado.
 
-Al actualizar, cierra Pliego y extrae la versión nueva en su propia carpeta. La biblioteca y el progreso se guardan en `%APPDATA%\pliego\reading.json`. Tus archivos se leen desde su ubicación y las descargas usan la carpeta que elijas.
+Al actualizar, cierra Pliego y ejecuta el instalador nuevo. Si usas la versión portable, extrae la versión nueva en su propia carpeta. La biblioteca y el progreso se guardan en `%APPDATA%\pliego\reading.json` y se conservan al desinstalar. Tus archivos se leen desde su ubicación y las descargas usan la carpeta que elijas.
 
 Al buscar por BitTorrent, otros participantes pueden conocer tu IP y Pliego puede compartir fragmentos durante la descarga. Una descarga pendiente guarda el magnet y su destino localmente.
 
