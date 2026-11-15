@@ -98,9 +98,11 @@
       <div id="scene" class="sheet-layer"></div>
       <div id="shadow" hidden></div>
       <canvas id="curl" hidden></canvas>
+      <canvas id="paper-classic" hidden></canvas>
       <canvas id="paper-fold" hidden></canvas>
+      <canvas id="paper-mesh" hidden></canvas>
       <aside id="page-turn-tip" aria-label="Consejo de lectura" hidden>
-        <span role="status">Arrastra una esquina de la página hacia el otro lado para girarla.</span>
+        <span role="status">Agarra la hoja desde el borde o desde dentro y arrástrala para girarla.</span>
         <button id="page-turn-tip-close" class="icon-button" type="button" aria-label="Cerrar consejo"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
       </aside>
     </div>
@@ -132,6 +134,12 @@
     <label class="check"><input id="rtl-option" type="checkbox"> Manga de derecha a izquierda</label>
     <label class="check"><input id="motion-option" type="checkbox"> Giro de papel</label>
     <label class="check"><input id="sound-option" type="checkbox"> Sonido de papel</label>
+    <label for="paper-mode-option" hidden>Laboratorio de papel</label>
+    <select id="paper-mode-option" hidden>
+      <option value="classic">Giro actual</option>
+      <option value="adaptive" selected>Pliegue adaptable</option>
+      <option value="mesh">Hoja en 3D</option>
+    </select>
   </section>
   <aside id="recent-preview" aria-hidden="true" hidden>
     <div class="preview-art"><img id="preview-image" alt=""><span id="preview-message"></span></div>

@@ -1,13 +1,15 @@
 import { createLibrary } from './library.mjs';
 import { createDownloads } from './downloads.mjs';
-import { createCurl, createPaperFold } from './curl.mjs';
+import { createCurl, createPaperFold, isCenterGrip, pullPaper, settlePaper } from './curl.mjs';
 import { createLayout, positionSheets, turningLeaves } from './layout.mjs';
 
 const byId = id => document.getElementById(id);
 const stage = byId('stage');
 const scene = byId('scene');
 const canvas = byId('curl');
+const classicCanvas = byId('paper-classic');
 const paperCanvas = byId('paper-fold');
+const meshCanvas = byId('paper-mesh');
 const shadow = byId('shadow');
 const drawer = byId('drawer');
 const thumbList = byId('thumb-list');
@@ -24,6 +26,9 @@ let pageIndex = 0;
 let zoom = 1;
 let signature;
 let curl;
+let classicCurl;
+let paperMesh;
+let paperMode = 'adaptive';
 let opening = false;
 let changing = false;
 let activeTurn;
@@ -39,15 +44,32 @@ let previousDouble;
 let pageTurnTipSeen = false;
 const paperFold = createPaperFold(paperCanvas);
 
-try { curl = createCurl(canvas); } catch (error) { console.warn(error); }
+try { curl = createCurl(canvas, { adaptive: true }); } catch (error) { console.warn(error); }
 canvas.addEventListener('webglcontextlost', event => {
   event.preventDefault();
   cancelTurn();
   curl = null;
 });
 canvas.addEventListener('webglcontextrestored', () => {
-  try { curl = createCurl(canvas); } catch (error) { console.warn(error); }
+  try { curl = createCurl(canvas, { adaptive: true }); } catch (error) { console.warn(error); }
 });
+classicCanvas.addEventListener('webglcontextlost', event => {
+  event.preventDefault();
+  cancelTurn();
+  classicCurl = null;
+});
+meshCanvas.addEventListener('webglcontextlost', event => {
+  event.preventDefault();
+  cancelTurn();
+  paperMesh = null;
+  if (paperMode === 'mesh') useAdaptivePaper('La hoja en 3D perdió la aceleración gráfica.');
+});
+
+function useAdaptivePaper(message) {
+  paperMode = 'adaptive';
+  byId('paper-mode-option').value = paperMode;
+  notice(message + ' Se activó el pliegue adaptable.');
+}
 
 function icon(name) {
   const ns = 'http://www.w3.org/2000/svg';
@@ -306,9 +328,8 @@ function physicalSide(direction) {
   return book.rtl ? -direction : direction;
 }
 
-function hitEdge(position) {
-  if (!current) return 0;
-  const sheets = positioned(current);
+function hitEdge(position, sheets = current && positioned(current)) {
+  if (!sheets) return 0;
   for (const direction of [1, -1]) {
     if (!neighbors.has(direction)) continue;
     const side = physicalSide(direction);
@@ -318,6 +339,20 @@ function hitEdge(position) {
     if (Math.abs(position.x - edge) <= edgeWidth && position.y >= sheet.y - 24 && position.y <= sheet.y + sheet.h + 24) return direction;
   }
   return 0;
+}
+
+function pageGrip(position, sheets, allowRim = false) {
+  const leaves = turningLeaves(sheets);
+  const pad = sheet => allowRim ? Math.min(18, sheet.h * .055) : 0;
+  const index = leaves.findIndex(sheet => position.x >= sheet.x && position.x <= sheet.x + sheet.w &&
+    position.y >= sheet.y - pad(sheet) && position.y <= sheet.y + sheet.h + pad(sheet));
+  const sheet = leaves[index];
+  return {
+    onPage: Boolean(sheet),
+    rim: Boolean(sheet && allowRim && Math.min(Math.abs(position.y - sheet.y),
+      Math.abs(position.y - sheet.y - sheet.h)) <= pad(sheet)),
+    direction: sheet && leaves.length === 2 ? physicalSide(index === 0 ? -1 : 1) : 0
+  };
 }
 
 function interpolatePaper(from, to, amount) {
@@ -344,8 +379,8 @@ function startTurn(direction, target) {
     ? bookTurn(original, next, side)
     : original.length === 2 ? spreadTurn(original, next, side) : singleTurn(sheet, next[0], side);
   if (!draw) return null;
-  activeTurn = { sheet, side, target, draw, progress: 0, tilt: 0, frame: 0 };
-  draw(0, 0);
+  activeTurn = { sheet, side, target, draw, mode: paperMode, progress: 0, tilt: 0, frame: 0 };
+  draw(0, 0, undefined, performance.now());
   return activeTurn;
 }
 
@@ -355,14 +390,30 @@ function startCurl(paper, side, back, bound) {
     width: stage.clientWidth, height: stage.clientHeight, paper, back, side, bound
   };
   let draw;
-  try { draw = curl?.begin(options); } catch (error) { console.warn(error); }
+  if (paperMode === 'mesh') {
+    try { draw = paperMesh?.begin(options); } catch (error) { console.warn(error); }
+    if (draw) return draw;
+    meshCanvas.hidden = true;
+    useAdaptivePaper('La hoja en 3D no pudo dibujar esta página.');
+  }
+  options.adaptive = paperMode === 'adaptive';
+  try {
+    if (!options.adaptive) classicCurl ||= createCurl(classicCanvas);
+    draw = (options.adaptive ? curl : classicCurl)?.begin(options);
+  } catch (error) { console.warn(error); }
   if (draw) return draw;
   canvas.hidden = true;
+  classicCanvas.hidden = true;
   return paperFold?.begin(options);
+}
+
+function gripWeight(grip) {
+  return grip?.point ? (grip.weight ?? 1) : 0;
 }
 
 function bookTurn(original, next, direction) {
   const openingBook = original.length === 1;
+  if (!openingBook && paperMode === 'adaptive') return closeSpread(original, next[0], direction);
   const single = (openingBook ? original : next)[0];
   const spread = openingBook ? next : original;
   const side = openingBook ? direction : -direction;
@@ -374,15 +425,33 @@ function bookTurn(original, next, direction) {
 
   // While the leaf turns, its inner edge moves from center to the spine.
   // The facing page moves beneath it and stays covered until the fold reveals it.
-  return (progress, tilt) => {
+  return (progress, tilt, grip, time) => {
     const open = openingBook ? progress : 1 - progress;
-    const travel = smooth(open / .84);
+    const held = gripWeight(grip);
+    const layout = open + ((openingBook ? 0 : 1) - open) * held;
+    const travel = smooth(layout / .84);
     const base = interpolatePaper(single, beneath, travel);
-    const width = single.w + (back.w - single.w) * smooth((open - .42) / .58);
+    const width = single.w + (back.w - single.w) * smooth((layout - .42) / .58);
     const geometry = { ...base, w: width, x: side > 0 ? base.x : base.x + base.w - width };
     rectangle(under, base);
-    under.style.opacity = Math.min(1, open * 7);
-    fold(open, tilt, geometry);
+    under.style.opacity = Math.min(1, (openingBook ? open : layout) * 7);
+    return fold(open, !openingBook && grip ? -tilt : tilt, geometry, grip && { ...grip, reverse: !openingBook }, time);
+  };
+}
+
+function closeSpread(original, cover, side) {
+  const [stationary, front] = side > 0 ? original : [...original].reverse();
+  const draw = startCurl(front, side, cover, true);
+  if (!draw) return null;
+  const still = sheetNode(stationary);
+  const finish = { ...cover, x: cover.x + side * cover.w };
+  scene.replaceChildren(still);
+
+  return (progress, tilt, grip, time) => {
+    const travel = smooth(progress) * (1 - gripWeight(grip));
+    rectangle(still, interpolatePaper(stationary, cover, travel));
+    still.style.opacity = 1 - smooth((travel - .34) / .66);
+    return draw(progress, tilt, interpolatePaper(front, finish, travel), grip, time);
   };
 }
 
@@ -398,18 +467,19 @@ function spreadTurn(original, next, side) {
   shadow.hidden = false;
   shadow.style.opacity = '0';
 
-  return (progress, tilt) => {
-    const travel = smooth(progress);
+  return (progress, tilt, grip, time) => {
+    const released = 1 - gripWeight(grip);
+    const travel = smooth(progress) * released;
     const facing = interpolatePaper(front, beneath, travel);
     const fixed = interpolatePaper(stationary, back, travel);
-    const width = front.w + (back.w - front.w) * smooth((progress - .42) / .58);
+    const width = front.w + (back.w - front.w) * smooth((progress - .42) / .58) * released;
     rectangle(under, facing);
     rectangle(still, fixed);
     rectangle(shadow, fixed);
-    draw(progress, tilt, {
+    return draw(progress, tilt, {
       ...facing, w: width, x: side > 0 ? facing.x : facing.x + facing.w - width,
       spine: (front.half === undefined ? 1 : 0) * (1 - travel) + (back.half === undefined ? 1 : 0) * travel
-    });
+    }, grip, time);
   };
 }
 
@@ -418,25 +488,30 @@ function singleTurn(front, next, side) {
   if (!draw) return null;
   const under = sheetNode(next);
   scene.replaceChildren(under);
-  return (progress, tilt) => {
-    const reveal = smooth((progress - .34) / .66);
+  return (progress, tilt, grip, time) => {
+    const released = 1 - gripWeight(grip);
+    const reveal = smooth((progress - .34) / .66) * released;
     const base = interpolatePaper(front, next, reveal);
     rectangle(under, base);
     under.style.clipPath = `inset(${Math.max(0, front.y - base.y) * (1 - reveal)}px ${Math.max(0, base.x + base.w - front.x - front.w) * (1 - reveal)}px ${Math.max(0, base.y + base.h - front.y - front.h) * (1 - reveal)}px ${Math.max(0, front.x - base.x) * (1 - reveal)}px)`;
-    draw(progress, tilt, interpolatePaper(front, next, smooth((progress - .45) / .55)));
+    return draw(progress, tilt, interpolatePaper(front, next, smooth((progress - .45) / .55) * released), grip, time);
   };
 }
 
-function updateTurn(turn, progress, tilt) {
+function updateTurn(turn, progress, tilt, grip) {
   if (activeTurn !== turn) return;
   turn.progress = progress;
   turn.tilt = tilt;
+  turn.grip = grip;
   shadow.style.opacity = Math.sin(progress * Math.PI) * .8;
   if (turn.frame) return;
-  turn.frame = requestAnimationFrame(() => {
+  function renderFrame(time) {
     turn.frame = 0;
-    if (activeTurn === turn) turn.draw(turn.progress, turn.tilt);
-  });
+    if (activeTurn === turn && turn.draw(turn.progress, turn.tilt, turn.grip, time)) {
+      turn.frame = requestAnimationFrame(renderFrame);
+    }
+  }
+  turn.frame = requestAnimationFrame(renderFrame);
 }
 
 function endTurn(turn, complete) {
@@ -445,7 +520,9 @@ function endTurn(turn, complete) {
   cancelAnimationFrame(turn.easeFrame);
   activeTurn = null;
   canvas.hidden = true;
+  classicCanvas.hidden = true;
   paperCanvas.hidden = true;
+  meshCanvas.hidden = true;
   shadow.hidden = true;
   if (complete) commit(turn.target);
   else render();
@@ -487,19 +564,35 @@ function settle(turn, complete, duration) {
   if (complete) paperSound();
   const from = turn.progress;
   const tilt = turn.tilt;
+  const grip = turn.grip;
+  const center = turn.mode === 'adaptive' && isCenterGrip(turn.side, grip);
+  if (center) duration = complete ? 380 : 270;
   const to = complete ? 1 : 0;
+  const speed = (turn.speed ?? 0) * duration / (to - from || 1);
+  cancelAnimationFrame(turn.frame);
   let start;
+  let landed = false;
   function step(time) {
     if (activeTurn !== turn) return;
     start ??= time;
     const elapsed = Math.min(1, (time - start) / duration);
-    if (elapsed >= 1) {
+    if (elapsed >= 1 && turn.mode !== 'adaptive') {
       endTurn(turn, complete);
       return;
     }
-    const eased = complete ? elapsed * elapsed * (3 - 2 * elapsed) : 1 - (1 - elapsed) ** 3;
+    const eased = turn.mode === 'mesh' ? settlePaper(elapsed, speed) :
+      complete ? smooth(elapsed) : 1 - (1 - elapsed) ** 3;
     turn.progress = from + (to - from) * eased;
-    turn.draw(turn.progress, tilt);
+    const relaxed = smooth(elapsed * (turn.mode === 'mesh' ? 1.36 : 1));
+    const moving = turn.draw(turn.progress, grip ? tilt * (1 - relaxed) : tilt,
+      grip && { ...grip, weight: 1 - relaxed, finish: complete, release: elapsed }, time);
+    if (elapsed >= 1 && (!moving || time - start >= duration + 140)) {
+      if (!center || landed || moving) {
+        endTurn(turn, complete);
+        return;
+      }
+      landed = true;
+    }
     shadow.style.opacity = Math.sin(turn.progress * Math.PI) * .8;
     turn.easeFrame = requestAnimationFrame(step);
   }
@@ -543,6 +636,20 @@ function updateGrab(interaction) {
   const turn = interaction.turn;
   if (!turn) return;
   const { start, last } = interaction;
+  if (turn.mode !== 'classic') {
+    const mesh = turn.mode === 'mesh';
+    const pose = pullPaper(turn.sheet, turn.side, start, last, interaction.held, mesh);
+    if (mesh) {
+      const now = performance.now();
+      const interval = now - (turn.lastPull ?? now);
+      if (interval > 8) {
+        turn.speed = interval < 88 ? (pose.progress - turn.progress) / interval * .45 + (turn.speed ?? 0) * .55 : 0;
+      }
+      if (interval > 8 || turn.lastPull === undefined) turn.lastPull = now;
+    }
+    updateTurn(turn, pose.progress, pose.tilt, pose.grip);
+    return;
+  }
   const delta = (start.x - last.x) * turn.side;
   const grip = interaction.held ? .16 : .025;
   const progress = Math.max(0, Math.min(.98, grip + delta / (turn.sheet.w * 1.12)));
@@ -560,7 +667,10 @@ function grab(interaction, direction) {
       return;
     }
     interaction.turn = startTurn(direction, target);
-    if (interaction.turn) updateGrab(interaction);
+    if (interaction.turn) {
+      stage.dataset.cursor = 'drag';
+      updateGrab(interaction);
+    }
   }
   if (neighbor.spread) begin(neighbor.spread);
   else {
@@ -583,21 +693,23 @@ stage.addEventListener('pointerdown', event => {
     gesture = { type: 'pinch', ...updatePinch() };
     return;
   }
-  const edge = hitEdge(position);
   const sheets = positioned(current);
-  const onPage = sheets.some(sheet => position.x >= sheet.x && position.x <= sheet.x + sheet.w &&
-    position.y >= sheet.y && position.y <= sheet.y + sheet.h);
+  const edge = hitEdge(position, sheets);
+  const free = paperMode === 'adaptive';
+  const { onPage, rim, direction: leaf } = pageGrip(position, sheets, free);
+  const leafDirection = free ? leaf : 0;
   const middle = (sheets[0].x + sheets.at(-1).x + sheets.at(-1).w) / 2;
-  const type = zoom > 1 && !edge ? 'pan' : 'page';
-  const interaction = { type, edge, onPage, start: position, last: position,
-    direction: edge, moved: false, startTime: performance.now(), touch: event.pointerType === 'touch' };
+  const preferred = physicalSide(position.x >= middle ? 1 : -1);
+  const type = zoom > 1 && !edge && !rim ? 'pan' : 'page';
+  const interaction = { type, edge, onPage, rim, start: position, last: position,
+    direction: edge, leafDirection, preferred: leafDirection || (neighbors.has(preferred) ? preferred : -preferred),
+    moved: false, startTime: performance.now(), touch: event.pointerType === 'touch' };
   gesture = interaction;
   if (type === 'pan') stage.dataset.cursor = 'drag';
   if (type === 'page' && (onPage || edge)) {
     interaction.hold = setTimeout(() => {
       if (gesture !== interaction || interaction.moved || !settings.motion) return;
-      const preferred = physicalSide(position.x >= middle ? 1 : -1);
-      interaction.direction = edge || (neighbors.has(preferred) ? preferred : -preferred);
+      interaction.direction = edge || interaction.preferred;
       interaction.held = true;
       stage.dataset.cursor = 'drag';
       grab(interaction, interaction.direction);
@@ -611,7 +723,16 @@ stage.addEventListener('pointerdown', event => {
 
 stage.addEventListener('pointermove', event => {
   if (!pointers.has(event.pointerId)) {
-    stage.dataset.cursor = settings.motion && hitEdge(point(event)) ? 'fold' : zoom > 1 ? 'pan' : '';
+    const position = point(event);
+    const sheets = current && positioned(current);
+    const edge = hitEdge(position, sheets);
+    let interior = false;
+    if (settings.motion && sheets && paperMode === 'adaptive') {
+      const grip = pageGrip(position, sheets, true);
+      interior = grip.onPage && (zoom === 1 || grip.rim) &&
+        (grip.direction ? neighbors.has(grip.direction) : neighbors.size > 0);
+    }
+    stage.dataset.cursor = settings.motion && (edge || interior) ? 'fold' : zoom > 1 ? 'pan' : '';
     return;
   }
   const position = point(event);
@@ -634,10 +755,15 @@ stage.addEventListener('pointermove', event => {
     pan.y += position.y - last.y;
     reposition();
   } else {
-    if (Math.abs(dx) > 10 && (gesture.edge ||
-        ((gesture.onPage || gesture.touch) && Math.abs(dx) > Math.abs(dy) * .8))) {
-      const direction = gesture.edge || physicalSide(dx < 0 ? 1 : -1);
-      if (direction !== gesture.direction && neighbors.has(direction)) {
+    const horizontal = Math.abs(dx) > 10 && (gesture.edge ||
+      ((gesture.onPage || gesture.touch) && Math.abs(dx) > Math.abs(dy) * .8));
+    const free = paperMode === 'adaptive';
+    const pulling = free && gesture.onPage && Math.hypot(dx, dy) > (gesture.rim ? 4 : 7);
+    if (horizontal || pulling) {
+      const swipe = physicalSide(dx < 0 ? 1 : -1);
+      const direction = gesture.edge || gesture.leafDirection ||
+        (horizontal && (!pulling || neighbors.has(swipe)) ? swipe : gesture.preferred);
+      if (direction !== gesture.direction && neighbors.has(direction) && !(free && gesture.direction)) {
         if (gesture.turn) endTurn(gesture.turn, false);
         gesture.turn = null;
         gesture.direction = direction;
@@ -658,20 +784,23 @@ function release(event, canceled = false) {
   const position = point(event);
   if (previous.turn) {
     const { turn, moved, held, edge, startTime } = previous;
-    previous.last = position;
-    updateGrab(previous);
+    if (!canceled) {
+      previous.last = position;
+      updateGrab(previous);
+    }
     const distance = (previous.start.x - position.x) * turn.side;
     const quick = performance.now() - startTime < 295 && distance > Math.min(105, turn.sheet.w * .23);
     const complete = !canceled && ((!held && !moved && edge) ||
       (moved && (distance >= turn.sheet.w * .34 || quick)));
     if (complete && moved) dismissPageTurnTip();
-    settle(turn, complete, complete ? 300 : 235);
+    settle(turn, complete, turn.mode === 'mesh' ? (complete ? 355 : 280) : (complete ? 300 : 235));
   } else if (!canceled && previous.type === 'page') {
     const dx = position.x - previous.start.x;
     const dy = position.y - previous.start.y;
-    if ((previous.onPage || previous.edge || previous.touch) &&
+    const direction = previous.leafDirection || physicalSide(dx < 0 ? 1 : -1);
+    if ((previous.onPage || previous.edge || previous.touch) && dx * physicalSide(direction) < 0 &&
         Math.abs(dx) > 58 && Math.abs(dx) > Math.abs(dy) * 1.25) {
-      navigate(physicalSide(dx < 0 ? 1 : -1));
+      navigate(direction);
       return;
     }
     const spread = positioned(current);
@@ -866,6 +995,19 @@ function syncOptions() {
   byId('sound-option').checked = settings.sound;
 }
 
+if (new URLSearchParams(location.search).has('papel')) {
+  const select = byId('paper-mode-option');
+  select.hidden = false;
+  select.labels[0].hidden = false;
+  select.addEventListener('change', () => {
+    cancelTurn();
+    paperMode = select.value;
+    if (paperMode !== 'mesh' || paperMesh) return;
+    try { paperMesh = createCurl(meshCanvas, { mesh: true }); } catch (error) { console.warn(error); }
+    if (!paperMesh) useAdaptivePaper('La hoja en 3D necesita aceleración gráfica.');
+  });
+}
+
 for (const [id, name] of [['layout-option', 'layout'], ['motion-option', 'motion'], ['sound-option', 'sound']]) {
   byId(id).addEventListener('change', event => {
     settings[name] = name === 'layout' ? event.target.value : event.target.checked;
@@ -885,7 +1027,11 @@ window.addEventListener('pointerdown', event => {
 });
 window.addEventListener('pointermove', event => {
   if (!document.body.classList.contains('fullscreen')) return;
-  const atEdge = event.clientY < 18 || event.clientY > innerHeight - 18;
+  if (gesture?.type === 'page' && (gesture.turn || gesture.rim)) return;
+  const distance = Math.min(event.clientY, innerHeight - event.clientY);
+  const onRim = distance > 3 && distance < 18 && current && settings.motion && paperMode === 'adaptive' &&
+    event.target === stage && pageGrip(point(event), positioned(current), true).rim;
+  const atEdge = distance < 18 && !onRim;
   trackChromePointer(atEdge || Boolean(event.target.closest(chromeControls)));
   if (!atEdge) chromeEdgeArmed = true;
   if (atEdge && chromeEdgeArmed) {

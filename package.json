@@ -1,7 +1,7 @@
 {
   "name": "pliego",
   "productName": "Pliego",
-  "version": "1.9.2",
+  "version": "1.10.0",
   "description": "Lector de cómics para Windows con giro de papel",
   "license": "MIT",
   "author": "Harex",
@@ -13,6 +13,7 @@
   "scripts": {
     "setup:win": "node scripts/vendor.mjs",
     "start": "electron .",
+    "lab:paper": "electron . --pliego-paper-lab",
     "test:win": "node --test tests/windows.cjs",
     "build:win": "node scripts/package.mjs",
     "release:win": "npm run build:win && node scripts/release.mjs"

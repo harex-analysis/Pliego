@@ -144,6 +144,42 @@ test('primera apertura, biblioteca, lector y descargas de Windows', { skip: Bool
     await page.locator('.recent').filter({ hasText: 'Lector' }).click();
     await page.locator('#page-turn-tip').waitFor();
     await button('Cerrar consejo').click();
+    const paper = await page.locator('.sheet').first().boundingBox();
+    const gripX = paper.x + paper.width * .64;
+    const gripY = paper.y + paper.height * .44;
+    const fold = page.locator('#curl:visible, #paper-fold:visible');
+    await page.mouse.move(gripX, gripY);
+    await page.mouse.down();
+    await page.mouse.move(gripX, gripY + paper.height * .23);
+    await fold.waitFor();
+    await page.mouse.up();
+    await fold.waitFor({ state: 'hidden' });
+    await page.locator('#page-label').getByText('1 / 2', { exact: true }).waitFor();
+    for (const [y, inward] of [[paper.y - 6, 1], [paper.y + paper.height + 6, -1]]) {
+      await page.mouse.move(gripX, y);
+      assert.equal(await page.locator('#stage').getAttribute('data-cursor'), 'fold');
+      await page.mouse.down();
+      await page.mouse.move(gripX - 18, y + inward * 25);
+      await fold.waitFor();
+      await page.mouse.up();
+      await fold.waitFor({ state: 'hidden' });
+    }
+    await page.locator('#page-label').getByText('1 / 2', { exact: true }).waitFor();
+    await page.mouse.move(gripX, gripY);
+    await page.mouse.down();
+    await fold.waitFor();
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector('#curl');
+      if (canvas.hidden) return !document.querySelector('#paper-fold').hidden;
+      const gl = canvas.getContext('webgl');
+      const program = gl.getParameter(gl.CURRENT_PROGRAM);
+      return gl.getUniform(program, gl.getUniformLocation(program, 'uWave'))[0] > 4;
+    });
+    await page.mouse.move(gripX - paper.width * .48, gripY, { steps: 8 });
+    await page.mouse.up();
+    await page.locator('#page-label').getByText('2 / 2', { exact: true }).waitFor();
+    await page.keyboard.press('ArrowLeft');
+    await page.locator('#page-label').getByText('1 / 2', { exact: true }).waitFor();
     await page.keyboard.press('ArrowRight');
     await page.locator('#page-label').getByText('2 / 2', { exact: true }).waitFor();
     await button('Pliego, inicio').click();

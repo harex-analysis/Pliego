@@ -6,6 +6,11 @@ const { createTransfers } = require('./torrent.cjs');
 const { addBook, applySuggestions, categories, findGroup, libraryView, loadLibrary, reorder, suggestGroups, updateGroup } = require('./library.cjs');
 
 const appOrigin = 'pliego://lector';
+const paperLab = !app.isPackaged && process.argv.includes('--pliego-paper-lab');
+const readerUrl = appOrigin + (paperLab ? '/?papel' : '/');
+if (paperLab && !process.argv.some(arg => /^--user-data-dir(?:=|$)/.test(arg))) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'Pliego Laboratorio'));
+}
 const resources = path.join(__dirname, '..');
 const extractor = path.join(app.isPackaged ? process.resourcesPath : resources, 'vendor', '7zip', '7z.exe');
 const files = {
@@ -155,7 +160,7 @@ async function start() {
 
   function handle(channel, action) {
     ipcMain.handle(channel, (event, ...args) => {
-      if (event.sender !== window?.webContents || event.senderFrame?.url !== appOrigin + '/') return null;
+      if (event.sender !== window?.webContents || event.senderFrame?.url !== readerUrl) return null;
       return action(...args);
     });
   }
@@ -420,7 +425,7 @@ async function start() {
 
   Menu.setApplicationMenu(null);
   window = new BrowserWindow({
-    title: 'Pliego', width: 1260, height: 880, minWidth: 580, minHeight: 460,
+    title: paperLab ? 'Pliego · Laboratorio de papel' : 'Pliego', width: 1260, height: 880, minWidth: 580, minHeight: 460,
     backgroundColor: '#101010', show: false,
     icon: path.join(resources, 'assets', 'pliego.ico'),
     titleBarStyle: 'hidden',
@@ -434,7 +439,7 @@ async function start() {
   window.on('enter-full-screen', () => window.webContents.send('reader:fullscreen-changed', true));
   window.on('leave-full-screen', () => window.webContents.send('reader:fullscreen-changed', false));
   window.once('ready-to-show', () => window.show());
-  await window.loadURL(appOrigin + '/');
+  await window.loadURL(readerUrl);
 }
 
 app.on('window-all-closed', () => app.quit());
