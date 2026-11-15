@@ -66,19 +66,6 @@ Al pulsar **Buscar archivos**, Pliego se conecta a BitTorrent. Otros participant
 
 </details>
 
-## Código fuente
-
-En Windows x64, con Node.js 22.12 o posterior, ejecuta:
-
-```powershell
-npm ci
-npm run setup:win
-npm run test:win
-npm start
-```
-
-Usa `npm run build:win` para compilar la carpeta portable y `npm run release:win` para crear los archivos de distribución. [Guía de publicación](PUBLICAR.md)
-
 ## Ayuda
 
 Si encuentras un problema, indica tu versión de Windows, la versión de Pliego y los pasos para reproducirlo. [Abrir un issue](https://github.com/harex-analysis/Pliego/issues/new) · [Reportes de seguridad](SECURITY.md)
