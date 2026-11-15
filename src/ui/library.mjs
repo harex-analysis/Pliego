@@ -1,4 +1,15 @@
 const categoryLabels = { manga: 'Mangas', comic: 'Cómics' };
+const maxTitleLength = 255;
+
+function cardTitle(item) {
+  return item.originalTitle === undefined
+    ? item.title.replace(/\s+\(\d{4}\)(?:\s+\([^)]*\))*$/u, '') || item.title
+    : item.title;
+}
+
+function validTitle(title) {
+  return title.length > 0 && title.length <= maxTitleLength && !/\p{Cc}/u.test(title);
+}
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -30,6 +41,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   const toast = byId('library-toast');
   const toastActions = byId('library-toast-actions');
   const selectionCategory = byId('selection-category');
+  const selectionRename = byId('selection-rename');
   const tabs = [...welcome.querySelectorAll('[data-category]')];
   let store = { books: [], groups: [], recentIds: [] };
   let category = 'comic';
@@ -155,6 +167,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     else selectionCategory.removeAttribute('aria-haspopup');
     byId('selection-group').disabled = !count || savingDrag || selectedTypes.size > 1;
     byId('selection-group').title = selectedTypes.size > 1 ? 'Selecciona títulos de la misma pestaña para agruparlos' : '';
+    selectionRename.disabled = !count || savingDrag;
     byId('selection-trash').disabled = !count || savingDrag;
     byId('selection-all').textContent = count && count === visibleIds.length ? 'Deseleccionar todo' : 'Seleccionar todo';
     for (const tile of grid.children) {
@@ -306,7 +319,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     cover.append(icon('book'), img);
     observer.observe(img);
     const details = element('span', 'recent-details');
-    const title = item.title.replace(/\s+\(\d{4}\)(?:\s+\([^)]*\))*$/u, '');
+    const title = cardTitle(item);
     const status = item.status === 'read' ? 'Leído' :
       item.status === 'unread' ? 'Sin leer' : 'Página ' + (item.page + 1) + ' de ' + item.count;
     details.append(element('span', 'recent-title', title), element('span', 'recent-page', status));
@@ -469,12 +482,18 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     });
   }
 
+  function selectedTitles() {
+    const index = new Map(store.books.filter(book => selectedBooks.has(book.id)).map(book => [book.id, book]));
+    return visibleIds.filter(id => index.has(id)).map(id => index.get(id));
+  }
+
   function showBookMenu(item, x, y, anchor) {
-    const titles = selectedBooks.has(item.id) ? store.books.filter(book => selectedBooks.has(book.id)) : [item];
+    const titles = selectedBooks.has(item.id) ? selectedTitles() : [item];
     if (titles.length > 1) {
       const ids = titles.map(book => book.id);
       const sameType = titles.every(book => book.category === item.category);
       showMenu([
+        ['Renombrar títulos…', () => renameTitles(titles, anchor)],
         ['Marcar como leídos', () => action('read', { ids, value: true })],
         ['Marcar como no leídos', () => action('read', { ids, value: false })],
         ...(sameType ? [['Añadir a grupo…', () => membership(titles, anchor)]] : []),
@@ -484,6 +503,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
       return;
     }
     showMenu([
+      ['Renombrar…', () => renameTitles([item], anchor)],
       ...(item.status !== 'read' ? [['Marcar como leído', () => action('read', { id: item.id, value: true })]] : []),
       ...(item.status !== 'unread' || item.page > 0
         ? [['Marcar como no leído', () => action('read', { id: item.id, value: false })]] : []),
@@ -508,6 +528,13 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     clearTimeout(toastTimer);
     toast.hidden = true;
     toastActions.replaceChildren();
+  }
+
+  async function checkUpdates() {
+    const update = await api.checkUpdates().catch(() => null);
+    if (!update) return;
+    byId('update-message').textContent = 'Pliego ' + update.version + (update.prerelease ? ' beta' : '') + ' disponible';
+    byId('update-banner').hidden = false;
   }
 
   function scheduleMessageHide(delay) {
@@ -564,7 +591,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   function showDialog(title, content, label, run, anchor) {
     hideOverlays();
     returnFocus = anchor;
-    dialog.classList.remove('with-cover-picker');
+    dialog.classList.remove('with-cover-picker', 'with-book-rename');
     byId('library-dialog-title').textContent = title;
     body.replaceChildren(content);
     submit.textContent = label;
@@ -604,14 +631,169 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     }
   });
 
-  function textInput(value, label) {
+  function textInput(value, label, maxLength = 120) {
     const input = element('input');
     input.type = 'text';
     input.value = value;
-    input.maxLength = 120;
+    input.maxLength = maxLength;
     input.setAttribute('aria-label', label);
     input.spellcheck = false;
     return input;
+  }
+
+  function renameField(label, control) {
+    const field = element('label', 'rename-field');
+    control.setAttribute('aria-label', label);
+    field.append(element('span', '', label), control);
+    return field;
+  }
+
+  async function saveTitles(changes, titles, anchor) {
+    const previous = new Map(titles.map(item => [item.id, item]));
+    const undo = changes.map(({ id }) => {
+      const item = previous.get(id);
+      return { id, title: item.originalTitle === undefined ? null : item.title };
+    });
+    const anchorId = anchor?.closest('.library-tile')?.dataset.bookId;
+    await edit('rename', { changes });
+    if (anchorId) {
+      returnFocus = [...grid.children].find(tile => tile.dataset.bookId === anchorId)?.querySelector('.recent');
+    }
+    message(changes.length === 1 ? 'Título renombrado.' : changes.length + ' títulos renombrados.',
+      [['Deshacer', () => action('rename', { changes: undo }, 'Cambios deshechos.')]]);
+  }
+
+  function renameTitles(titles, anchor) {
+    if (!titles.length || savingDrag) return;
+    if (titles.length > 1) {
+      renameBatch(titles, anchor);
+      return;
+    }
+
+    const [item] = titles;
+    const original = cardTitle(item);
+    const input = textInput(original, 'Título en Pliego', maxTitleLength);
+    const content = element('div', 'rename-books');
+    content.append(renameField('Título en Pliego', input));
+    if (item.originalTitle !== undefined) {
+      const restore = button('Restaurar título del archivo');
+      restore.addEventListener('click', () => {
+        input.value = item.originalTitle;
+        refresh();
+        input.focus();
+        input.select();
+      });
+      content.append(restore);
+    }
+    function refresh() {
+      const title = input.value.trim();
+      submit.disabled = !validTitle(title) || title === original;
+    }
+    input.addEventListener('input', refresh);
+    showDialog('Renombrar título', content, 'Guardar', () => {
+      const title = input.value.trim();
+      return saveTitles([{ id: item.id, title: title === item.originalTitle ? null : title }], titles, anchor);
+    }, anchor);
+    refresh();
+    input.select();
+  }
+
+  function renameBatch(titles, anchor) {
+    const content = element('div', 'rename-books');
+    const mode = element('select');
+    for (const [value, label] of [
+      ['manual', 'Editar uno por uno'], ['replace', 'Buscar y reemplazar'],
+      ['add', 'Añadir texto'], ['number', 'Numerar en este orden']
+    ]) {
+      const option = element('option', '', label);
+      option.value = value;
+      mode.append(option);
+    }
+    const controls = element('div', 'rename-options');
+    const search = textInput('', 'Buscar', maxTitleLength);
+    const replacement = textInput('', 'Reemplazar por', maxTitleLength);
+    replacement.placeholder = 'Deja vacío para quitar el texto';
+    const prefix = textInput('', 'Al principio', maxTitleLength);
+    const suffix = textInput('', 'Al final', maxTitleLength);
+    const base = textInput('', 'Título común (opcional)', maxTitleLength);
+    base.placeholder = 'Ej. Absolute Batman · Tomo';
+    const start = element('input');
+    start.type = 'number';
+    start.value = 1;
+    start.min = 0;
+    start.max = 999999;
+    const options = {
+      replace: [renameField('Buscar', search), renameField('Reemplazar por', replacement)],
+      add: [renameField('Al principio', prefix), renameField('Al final', suffix)],
+      number: [renameField('Título común (opcional)', base), renameField('Empezar en', start)]
+    };
+    const list = element('div', 'rename-list');
+    const heading = element('div', 'rename-row rename-heading');
+    heading.append(element('span', '', 'Título actual'), element('span', '', 'Nuevo título'));
+    list.append(heading);
+    const summary = element('p', 'rename-summary');
+    summary.setAttribute('role', 'status');
+    let changes = [];
+    const rows = titles.map(item => {
+      const original = cardTitle(item);
+      const input = textInput(original, 'Nuevo título de ' + original, maxTitleLength);
+      const row = element('label', 'rename-row');
+      const name = element('span', 'rename-original', original);
+      name.title = original;
+      row.append(name, input);
+      list.append(row);
+      const entry = { item, original, input, suggested: original, edited: false };
+      input.addEventListener('input', () => {
+        entry.edited = input.value !== entry.suggested;
+        refresh();
+      });
+      return entry;
+    });
+
+    function refresh() {
+      const first = start.valueAsNumber;
+      const badStart = mode.value === 'number' && (!Number.isInteger(first) || !start.validity.valid);
+      const digits = Math.max(2, String(first + rows.length - 1).length);
+      const common = base.value.trim();
+      const pattern = mode.value === 'replace' && search.value
+        ? new RegExp(search.value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&'), 'giu')
+        : null;
+      changes = [];
+      let invalid = false;
+      for (const [index, row] of rows.entries()) {
+        const { item, original, input } = row;
+        let next = original;
+        if (pattern) next = original.replace(pattern, () => replacement.value).trim();
+        if (mode.value === 'add') next = [prefix.value.trim(), original, suffix.value.trim()].filter(Boolean).join(' ');
+        if (mode.value === 'number' && !badStart) {
+          const number = String(first + index).padStart(digits, '0');
+          next = common ? common + ' ' + number : number + ' · ' + original;
+        }
+        row.suggested = next;
+        if (!row.edited && input.value !== next) input.value = next;
+        const title = input.value.trim();
+        const valid = validTitle(title);
+        input.setAttribute('aria-invalid', String(!valid));
+        if (!valid) invalid = true;
+        else if (title !== original) changes.push({ id: item.id, title: title === item.originalTitle ? null : title });
+      }
+      summary.textContent = badStart ? 'Elige un número entero entre 0 y 999999.' : invalid
+        ? 'Usa entre 1 y ' + maxTitleLength + ' caracteres por título.'
+        : changes.length === 1 ? '1 título cambiará' : changes.length + ' títulos cambiarán';
+      submit.disabled = badStart || invalid || !changes.length;
+    }
+
+    mode.addEventListener('change', () => {
+      controls.replaceChildren(...(options[mode.value] || []));
+      refresh();
+    });
+    controls.addEventListener('input', refresh);
+    content.append(renameField('Cómo renombrar', mode), controls, list, summary);
+    showDialog('Renombrar ' + titles.length + ' títulos', content, 'Guardar cambios',
+      () => saveTitles(changes, titles, anchor), anchor);
+    dialog.classList.add('with-book-rename');
+    mode.focus({ preventScroll: true });
+    refresh();
   }
 
   function checkRow(text, checked) {
@@ -950,6 +1132,17 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     tab.addEventListener('click', () => showCategory(type, false));
   }
   byId('library-add').addEventListener('click', () => importFiles());
+  byId('update-download').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    const opened = await api.openUpdate().catch(() => false);
+    button.disabled = false;
+    if (!opened) message('No se pudo abrir la descarga en GitHub.');
+  });
+  byId('update-dismiss').addEventListener('click', () => {
+    byId('update-banner').hidden = true;
+    byId('library-add').focus({ preventScroll: true });
+  });
   byId('library-select').addEventListener('click', () => {
     if (selecting) clearSelection();
     else {
@@ -974,6 +1167,19 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   });
   byId('selection-group').addEventListener('click', event => {
     membership(store.books.filter(item => selectedBooks.has(item.id)), event.currentTarget);
+  });
+  selectionRename.addEventListener('click', () => renameTitles(selectedTitles(), selectionRename));
+  welcome.addEventListener('keydown', event => {
+    if (event.key !== 'F2' || dialog.open || !menu.hidden || orderEditing || savingDrag) return;
+    const tile = event.target.closest('.library-tile');
+    const id = tile?.dataset.bookId;
+    const titles = selectedBooks.size && (!id || selectedBooks.has(id))
+      ? selectedTitles()
+      : store.books.filter(item => item.id === id);
+    if (titles.length) {
+      event.preventDefault();
+      renameTitles(titles, event.target);
+    }
   });
   const trash = byId('selection-trash');
   trash.addEventListener('click', () => removeBooks(visibleIds.filter(id => selectedBooks.has(id))));
@@ -1036,6 +1242,6 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     hidePreview();
   });
 
-  return { update, progress, render, hideOverlays, importFiles, showCategory, clearMessage,
+  return { update, progress, render, hideOverlays, importFiles, showCategory, clearMessage, checkUpdates,
     category: currentCategory };
 }

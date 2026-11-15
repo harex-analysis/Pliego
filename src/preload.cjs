@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('pliego', {
   initial: () => ipcRenderer.invoke('reader:initial'),
+  checkUpdates: () => ipcRenderer.invoke('updates:check'),
+  openUpdate: () => ipcRenderer.invoke('updates:open'),
   choose: category => ipcRenderer.invoke('reader:choose', category),
   open: (file, category) => ipcRenderer.invoke('reader:open', file, category),
   drop: (file, category) => ipcRenderer.invoke('reader:open', webUtils.getPathForFile(file), category),

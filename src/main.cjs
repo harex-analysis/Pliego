@@ -1,9 +1,11 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, protocol, shell } = require('electron');
 const { readFile, writeFile, rename, stat } = require('node:fs/promises');
 const path = require('node:path');
 const { openArchive } = require('./archive.cjs');
 const { createTransfers } = require('./torrent.cjs');
-const { addBook, applySuggestions, categories, findGroup, libraryView, loadLibrary, reorder, suggestGroups, updateGroup } = require('./library.cjs');
+const { createUpdateCheck } = require('./updates.cjs');
+const { addBook, applySuggestions, bookTitle, categories, findGroup, libraryView, loadLibrary, renameBooks,
+  reorder, suggestGroups, updateGroup } = require('./library.cjs');
 
 const appOrigin = 'pliego://lector';
 const paperLab = !app.isPackaged && process.argv.includes('--pliego-paper-lab');
@@ -165,6 +167,19 @@ async function start() {
     });
   }
 
+  const updates = createUpdateCheck(app.getVersion(), (...args) => net.fetch(...args));
+  handle('updates:check', () => updates.check());
+  handle('updates:open', async () => {
+    const url = updates.releasePage();
+    if (!url) return false;
+    try {
+      await shell.openExternal(url);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
   async function open(file, category) {
     const request = ++openRequest;
     try {
@@ -184,7 +199,7 @@ async function start() {
       const record = addBook(state, next, existing, category ?? 'comic');
       state.recentIds = [next.id, ...state.recentIds.filter(id => id !== next.id)];
       save().catch(console.error);
-      return { id: next.id, title: next.title, count: next.count, page: record.page,
+      return { id: next.id, title: bookTitle(record), count: next.count, page: record.page,
         category: record.category, rtl: record.rtl, library: libraryView(state) };
     } catch (error) {
       return request === openRequest ? { error: error.code === 'ENOENT' ? 'El archivo ya no está en esa ubicación.' : error.message } : null;
@@ -238,6 +253,17 @@ async function start() {
       const [item] = items;
       const group = state.groups.find(entry => entry.id === args.groupId);
       switch (command) {
+        case 'rename': {
+          const rollback = renameBooks(state, args.changes);
+          try {
+            await save();
+          } catch (error) {
+            rollback();
+            save().catch(console.error);
+            throw error;
+          }
+          return { library: libraryView(state) };
+        }
         case 'read':
           for (const book of items) {
             book.read = args.value === true;

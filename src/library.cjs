@@ -2,6 +2,7 @@ const { randomUUID } = require('node:crypto');
 
 const order = new Intl.Collator('es', { numeric: true, sensitivity: 'base' });
 const categories = new Set(['comic', 'manga']);
+const maxTitleLength = 255;
 
 function key(text) {
   return text.normalize('NFKD').toLowerCase().replace(/\p{M}/gu, '').match(/[\p{L}\p{N}]+/gu)?.join(' ') || '';
@@ -29,10 +30,46 @@ function loadLibrary(saved) {
 
 function libraryView(state) {
   return {
-    books: state.books.filter(item => !item.removed).map(({ id, title, page, count, category, read, unread }) =>
-      ({ id, title, page, count, category, status: read ? 'read' : page > 0 && !unread ? 'reading' : 'unread' })),
+    books: state.books.filter(item => !item.removed).map(item => {
+      const { id, title, customTitle, page, count, category, read, unread } = item;
+      return { id, title: bookTitle(item), originalTitle: customTitle === undefined ? undefined : title,
+        page, count, category, status: read ? 'read' : page > 0 && !unread ? 'reading' : 'unread' };
+    }),
     recentIds: state.recentIds,
     groups: state.groups
+  };
+}
+
+function bookTitle(book) {
+  return book.customTitle ?? book.title;
+}
+
+function renameBooks(state, changes) {
+  if (!Array.isArray(changes) || !changes.length || changes.length > state.books.length) {
+    throw Error('Elige los títulos que quieras renombrar.');
+  }
+  const books = new Map(state.books.filter(book => !book.removed).map(book => [book.id, book]));
+  const edits = changes.map(change => {
+    const book = books.get(change?.id);
+    if (!book) throw Error('Uno de los títulos ya no está disponible. Vuelve a seleccionar las portadas.');
+    books.delete(book.id);
+    if (change.title === null) return { book, previous: book.customTitle, title: undefined };
+    const title = typeof change.title === 'string' ? change.title.trim() : '';
+    if (!title || title.length > maxTitleLength || /\p{Cc}/u.test(title)) {
+      throw Error('Cada título debe tener entre 1 y ' + maxTitleLength + ' caracteres y ocupar una sola línea.');
+    }
+    return { book, previous: book.customTitle, title };
+  });
+  for (const { book, title } of edits) {
+    if (title === undefined) delete book.customTitle;
+    else book.customTitle = title;
+  }
+  return () => {
+    for (const { book, title, previous } of edits) {
+      if (book.customTitle !== title) continue;
+      if (previous === undefined) delete book.customTitle;
+      else book.customTitle = previous;
+    }
   };
 }
 
@@ -149,7 +186,7 @@ function suggestGroups(state, category) {
     const tentative = strongest.reason === 'subtitle' || rows.some(row => row.reason === 'subtitle');
     candidates.push({
       name: group?.name ?? strongest.series, reason: tentative ? 'subtitle' : strongest.reason,
-      groupId: group?.id, books: additions.sort(compareVolumes).map(row => ({ id: row.item.id, title: row.item.title }))
+      groupId: group?.id, books: additions.sort(compareVolumes).map(row => ({ id: row.item.id, title: bookTitle(row.item) }))
     });
   }
 
@@ -174,7 +211,7 @@ function suggestGroups(state, category) {
     const additions = prefix.rows.filter(row => !claimed.has(row.item.id) && !group?.books.includes(row.item.id));
     if (additions.length < (group || candidate ? 1 : 2)) continue;
     additions.forEach(row => claimed.add(row.item.id));
-    const books = additions.sort(compareVolumes).map(row => ({ id: row.item.id, title: row.item.title, tentative: Boolean(candidate) }));
+    const books = additions.sort(compareVolumes).map(row => ({ id: row.item.id, title: bookTitle(row.item), tentative: Boolean(candidate) }));
     if (candidate) candidate.books.push(...books);
     else candidates.push({ name: group?.name ?? prefix.label, reason: 'subtitle', groupId: group?.id, books });
   }
@@ -200,4 +237,5 @@ function applySuggestions(state, category, proposals) {
   state.groups = groups;
 }
 
-module.exports = { addBook, applySuggestions, categories, findGroup, libraryView, loadLibrary, reorder, suggestGroups, updateGroup };
+module.exports = { addBook, applySuggestions, bookTitle, categories, findGroup, libraryView, loadLibrary, renameBooks,
+  reorder, suggestGroups, updateGroup };

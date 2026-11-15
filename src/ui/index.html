@@ -65,6 +65,13 @@
             <button id="torrent-open" class="icon-button" type="button" aria-label="Añadir por magnet o hash" title="Añadir por magnet o hash"><svg aria-hidden="true"><use href="#i-link"/></svg></button>
           </div>
         </header>
+        <aside id="update-banner" hidden>
+          <span id="update-message" role="status"></span>
+          <button id="update-download" class="button primary" type="button" title="Abrir la versión en GitHub">Descargar actualización</button>
+          <button id="update-dismiss" class="icon-button" type="button" aria-label="Ocultar aviso de actualización" title="Ocultar aviso de actualización">
+            <svg aria-hidden="true"><use href="#i-close"/></svg>
+          </button>
+        </aside>
         <button id="torrent-summary" class="button" type="button" hidden></button>
         <div id="library-controls">
           <div class="library-tools">
@@ -80,6 +87,7 @@
             <span id="selection-count" role="status"></span>
             <button id="selection-all" class="button" type="button">Seleccionar todo</button>
             <div class="selection-actions">
+              <button id="selection-rename" class="button" type="button">Renombrar…</button>
               <button id="selection-category" class="button" type="button" disabled>Mover a…</button>
               <button id="selection-group" class="button" type="button">Añadir a grupo…</button>
               <button id="selection-trash" class="button" type="button" title="Quitar los títulos de Pliego y conservar los archivos"><svg aria-hidden="true"><use href="#i-trash"/></svg>Quitar de Pliego</button>

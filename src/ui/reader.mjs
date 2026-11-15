@@ -1,6 +1,6 @@
 import { createLibrary } from './library.mjs';
 import { createDownloads } from './downloads.mjs';
-import { createCurl, createPaperFold, isCenterGrip, pullPaper, settlePaper } from './curl.mjs';
+import { cornerGripWeight, createCurl, createPaperFold, isCenterGrip, pullPaper, settlePaper } from './curl.mjs';
 import { createLayout, positionSheets, turningLeaves } from './layout.mjs';
 
 const byId = id => document.getElementById(id);
@@ -566,7 +566,9 @@ function settle(turn, complete, duration) {
   const tilt = turn.tilt;
   const grip = turn.grip;
   const center = turn.mode === 'adaptive' && isCenterGrip(turn.side, grip);
-  if (center) duration = complete ? 380 : 270;
+  const corner = turn.mode === 'adaptive' && !center ? cornerGripWeight(turn.side, grip) : 0;
+  if (center) duration = complete ? 410 : 270;
+  duration += corner * (complete ? 44 : 26);
   const to = complete ? 1 : 0;
   const speed = (turn.speed ?? 0) * duration / (to - from || 1);
   cancelAnimationFrame(turn.frame);
@@ -583,7 +585,7 @@ function settle(turn, complete, duration) {
     const eased = turn.mode === 'mesh' ? settlePaper(elapsed, speed) :
       complete ? smooth(elapsed) : 1 - (1 - elapsed) ** 3;
     turn.progress = from + (to - from) * eased;
-    const relaxed = smooth(elapsed * (turn.mode === 'mesh' ? 1.36 : 1));
+    const relaxed = smooth(elapsed * (turn.mode === 'mesh' ? 1.36 : 1 + .25 * corner));
     const moving = turn.draw(turn.progress, grip ? tilt * (1 - relaxed) : tilt,
       grip && { ...grip, weight: 1 - relaxed, finish: complete, release: elapsed }, time);
     if (elapsed >= 1 && (!moving || time - start >= duration + 140)) {
@@ -712,7 +714,8 @@ stage.addEventListener('pointerdown', event => {
       interaction.direction = edge || interaction.preferred;
       interaction.held = true;
       stage.dataset.cursor = 'drag';
-      grab(interaction, interaction.direction);
+      if (interaction.turn) updateGrab(interaction);
+      else grab(interaction, interaction.direction);
     }, 165);
     if (edge) {
       stage.dataset.cursor = 'drag';
@@ -789,9 +792,11 @@ function release(event, canceled = false) {
       updateGrab(previous);
     }
     const distance = (previous.start.x - position.x) * turn.side;
-    const quick = performance.now() - startTime < 295 && distance > Math.min(105, turn.sheet.w * .23);
+    const reach = turn.grip ? (turn.side > 0 ? turn.grip.x : 1 - turn.grip.x) : 1;
+    const inner = turn.mode === 'adaptive' ? 1 - smooth((reach - .13) / .23) : 0;
+    const quick = performance.now() - startTime < 295 && distance > Math.min(105, turn.sheet.w * (.23 - .085 * inner));
     const complete = !canceled && ((!held && !moved && edge) ||
-      (moved && (distance >= turn.sheet.w * .34 || quick)));
+      (moved && (distance >= turn.sheet.w * (.34 - .15 * inner) || quick)));
     if (complete && moved) dismissPageTurnTip();
     settle(turn, complete, turn.mode === 'mesh' ? (complete ? 355 : 280) : (complete ? 300 : 235));
   } else if (!canceled && previous.type === 'page') {
@@ -1132,6 +1137,7 @@ pageTurnTipSeen = initial.pageTurnTipSeen;
 syncOptions();
 library.update(initial.library);
 library.render();
+library.checkUpdates();
 window.pliego.onLibraryChanged(data => {
   library.update(data);
   if (!book && !document.querySelector('#library-dialog[open]')) library.render();

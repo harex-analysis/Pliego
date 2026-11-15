@@ -3,6 +3,7 @@ Unicode true
 !include "x64.nsh"
 
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Pliego"
+!define DESKTOP_LINK "$DESKTOP\Pliego.lnk"
 
 Name "Pliego"
 OutFile "$%PLIEGO_INSTALLER_FILE%"
@@ -26,9 +27,14 @@ VIAddVersionKey /LANG=3082 "LegalCopyright" "© 2026 Harex"
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_FUNCTION LaunchPliego
 !define MUI_FINISHPAGE_RUN_TEXT "Abrir Pliego"
+!define MUI_FINISHPAGE_SHOWREADME
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Crear un acceso directo en el escritorio"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcut
+!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW PrepareFinishPage
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -61,6 +67,28 @@ FunctionEnd
 Function LaunchPliego
   SetOutPath "$INSTDIR"
   Exec '"$INSTDIR\Pliego.exe"'
+FunctionEnd
+
+Function PrepareFinishPage
+  ${NSD_Uncheck} $mui.FinishPage.ShowReadme
+FunctionEnd
+
+Function CreateDesktopShortcut
+  ${If} ${FileExists} "${DESKTOP_LINK}"
+    ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "DesktopShortcut"
+    ${If} $0 != "${DESKTOP_LINK}"
+      MessageBox MB_ICONINFORMATION "Ya existe un acceso directo llamado Pliego en el escritorio." /SD IDOK
+    ${EndIf}
+    Return
+  ${EndIf}
+  SetOutPath "$INSTDIR"
+  ClearErrors
+  CreateShortCut "${DESKTOP_LINK}" "$INSTDIR\Pliego.exe"
+  ${If} ${Errors}
+    MessageBox MB_ICONEXCLAMATION "No se pudo crear el acceso directo en el escritorio." /SD IDOK
+    Return
+  ${EndIf}
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DesktopShortcut" "${DESKTOP_LINK}"
 FunctionEnd
 
 Section "Pliego"
@@ -113,6 +141,10 @@ Section "Uninstall"
   ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
   ${If} $0 == $INSTDIR
     Delete "$SMPROGRAMS\Pliego.lnk"
+    ReadRegStr $1 HKCU "${UNINSTALL_KEY}" "DesktopShortcut"
+    ${If} $1 == "${DESKTOP_LINK}"
+      Delete "${DESKTOP_LINK}"
+    ${EndIf}
     DeleteRegKey HKCU "${UNINSTALL_KEY}"
   ${EndIf}
   Delete "$INSTDIR\Desinstalar Pliego.exe"

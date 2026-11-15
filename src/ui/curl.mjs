@@ -89,7 +89,9 @@ const fragmentSource = `
 
 const waveSpan = .44;
 const rollBend = .42;
+const rootLength = .25;
 const looseTip = .28;
+const cornerContactStart = .61;
 
 const meshVertexSource = `
   attribute vec2 aVertex;
@@ -104,9 +106,12 @@ const meshVertexSource = `
   uniform float uShadowPass;
   uniform float uAdaptive;
   uniform float uSpineSide;
-  uniform vec2 uWave;
+  uniform vec3 uWave;
+  uniform float uWaveLean;
   uniform float uCenterTurn;
-  uniform vec3 uCenterFlex;
+  uniform float uCenterRoot;
+  uniform vec4 uCenterFlex;
+  uniform vec2 uCenterCorners;
   varying vec2 vUV;
   varying vec2 vSlope;
   varying vec2 vPoint;
@@ -125,12 +130,17 @@ const meshVertexSource = `
   }
 
   vec3 turnSection(float reach, float width, float turn, float tip, float contact) {
+    // Keep part of the sheet against the binding until the rolling bend reaches it.
+    float root = uCenterRoot * width * (1.0 - smoothstep(.08, 1.24, turn));
+    if (reach <= root) return vec3(reach, 0.0, 0.0);
+    reach -= root;
+    width -= root;
     float bend = ${rollBend} * width * max(0.0, sin(turn));
     if (reach < bend) {
       float angle = turn * reach / bend;
-      return vec3(paperArc(reach, 0.0, angle), angle);
+      return vec3(vec2(root, 0.0) + paperArc(reach, 0.0, angle), angle);
     }
-    vec2 base = paperArc(bend, 0.0, turn);
+    vec2 base = vec2(root, 0.0) + paperArc(bend, 0.0, turn);
     float available = width - bend;
     float outside = max(0.0, reach - bend);
     if (contact <= 0.0 || turn <= 2.20) {
@@ -158,21 +168,28 @@ const meshVertexSource = `
     return vec3(position, second > 0.0 ? b : a);
   }
 
+  float rowProfile(float row) {
+    return mix(row, smoothstep(0.0, 1.0, row), .56);
+  }
+
   void main() {
     vUV = aVertex;
     vec2 point = aVertex * uPage.zw;
     float ripple = 0.0;
     vWaveSlope = 0.0;
     if (uWave.x > 0.0) {
-      float span = ${waveSpan} * uPage.z;
+      float span = uWave.z * uPage.z;
       float reach = uSpineSide > 0.0 ? point.x : uPage.z - point.x;
-      float t = clamp((reach - uWave.y * uPage.z) / span + .5, 0.0, 1.0);
-      float peakSlope = PI * uWave.x / span;
+      float row = aVertex.y - uGripY;
+      float height = uCenterTurn < 0.0 ? uWave.x : uWave.x * (1.0 - .56 * smoothstep(.04, .77, abs(row)));
+      float center = clamp(uWave.y + row * uWaveLean, uWave.z * .5, 1.0 - uWave.z * .5) * uPage.z;
+      float t = clamp((reach - center) / span + .5, 0.0, 1.0);
+      float peakSlope = PI * height / span;
       // Integrating the horizontal projection keeps the raised paper from stretching sideways.
       float loss = .25 * peakSlope * peakSlope * span * (t - sin(4.0 * PI * t) / (4.0 * PI));
       point.x -= uSpineSide * loss;
       float rise = sin(PI * t);
-      ripple = uWave.x * rise * rise;
+      ripple = height * rise * rise;
       vWaveSlope = uSpineSide * peakSlope * sin(2.0 * PI * t);
     }
     float awayFromGrip = smoothstep(0.0, .72, abs(aVertex.y - uGripY));
@@ -183,9 +200,12 @@ const meshVertexSource = `
     if (uCenterTurn >= 0.0) {
       float spine = uSpineSide > 0.0 ? 0.0 : uPage.z;
       float reach = abs(point.x - spine);
-      float row = mix(aVertex.y, smoothstep(0.0, 1.0, aVertex.y), .68) - .5;
-      float rowTurn = clamp(uCenterTurn + uCenterFlex.y * row, 0.0, PI);
-      vec3 rolled = turnSection(reach, uPage.z, rowTurn, uCenterFlex.x, uCenterFlex.z);
+      float row = rowProfile(aVertex.y) - rowProfile(uGripY);
+      float lead = uCenterFlex.w * smoothstep(0.0, .72, abs(aVertex.y - uGripY));
+      float rowTurn = clamp(uCenterTurn + uCenterFlex.y * row + lead, 0.0, PI);
+      vec2 corners = smoothstep(vec2(${cornerContactStart}), vec2(1.0), vec2(1.0 - aVertex.y, aVertex.y));
+      float contact = uCenterFlex.z * (1.0 - dot(uCenterCorners, corners));
+      vec3 rolled = turnSection(reach, uPage.z, rowTurn, uCenterFlex.x, contact);
       angle = rolled.z;
       vHeight = max(0.0, rolled.y);
       normal = vec2(uSpineSide, 0.0);
@@ -408,9 +428,10 @@ function advanceCenterTurn(state, target, elapsed) {
   for (let left = elapsed; left > 0;) {
     const step = Math.min(left, 1 / 160);
     const remaining = Math.max(0, direction * (target - state.angle));
-    const gravity = 38 * Math.max(0, Math.cos(remaining)) * smoothStep(.02, .48, remaining);
-    const damping = 29 + 8 * (1 - smoothStep(.07, .51, remaining));
-    state.speed = Math.max(0, state.speed + (254 * remaining + gravity - damping * state.speed) * step);
+    const stiffness = direction > 0 ? 254 - 102 * smoothStep(.58, 1.64, remaining) : 254;
+    const gravity = direction > 0 ? 38 * smoothStep(1.45, 2.40, state.angle) * smoothStep(.02, .48, remaining) : 0;
+    const damping = 28 + 8 * (1 - smoothStep(.07, .51, remaining));
+    state.speed = Math.max(0, state.speed + (stiffness * remaining + gravity - damping * state.speed) * step);
     state.angle += direction * Math.min(remaining, state.speed * step);
     left -= step;
   }
@@ -427,6 +448,7 @@ function trackFold(height, flat = false) {
   let previousTime;
   let previousPoint;
   let momentum = 0;
+  let verticalMotion = 0;
   let centerVelocity = 0;
   let centerRelease;
 
@@ -439,11 +461,11 @@ function trackFold(height, flat = false) {
       return target;
     }
     const point = grip?.point;
-    const drag = point && previousPoint ? Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y) : 0;
+    const dy = point && previousPoint ? point.y - previousPoint.y : 0;
+    const drag = point && previousPoint ? Math.hypot(point.x - previousPoint.x, dy) : 0;
     const interval = time - previousTime;
     const elapsed = clamp(interval, 1, 28);
     momentum = Math.max(momentum * Math.exp(-elapsed / 24), clamp((drag - 6) * 4.5, 0, 150));
-    const maxMotion = elapsed * 1.4 + momentum;
     const wantedWave = target.wave ?? 0;
     const oldWave = previous.wave ?? 0;
     const waveLimit = elapsed * .24 + .018 * momentum;
@@ -454,14 +476,29 @@ function trackFold(height, flat = false) {
     if (target.centerTurn !== undefined) {
       const before = previous.centerTurn ?? 0;
       const timeReleased = grip.release ?? 0;
-      const touch = clamp(grip.vertical * 1.3 + (.5 - grip.y) * .42, -.22, .22);
+      const touch = clamp(grip.vertical * 1.15 + (.5 - grip.y) * .78, -.42, .42);
+      const follow = 1 - Math.exp(-elapsed / 25);
+      const followRidge = (old, wanted) => old === undefined || Math.abs(old - wanted) < .001
+        ? wanted : old + (wanted - old) * follow;
+      const waveCenter = followRidge(previous.waveCenter, target.waveCenter);
+      const waveLean = followRidge(previous.waveLean, target.waveLean);
       let centerTurn;
       let moving;
       if (grip.release !== undefined) {
         const end = grip.finish ? Math.PI : 0;
         if (!centerRelease) {
           const toward = grip.finish ? 1 : -1;
-          centerRelease = { angle: before, speed: interval < 80 ? clamp(centerVelocity * toward * 1000, 0, 12) : 0 };
+          centerRelease = { angle: before, speed: interval < 80 ? clamp(centerVelocity * toward * 850, 0, 10) : 0 };
+          if (grip.finish) {
+            const skew = previous.skew ?? 0;
+            const lead = previous.lead ?? 0;
+            const row = .44 * grip.y + .56 * smoothStep(0, 1, grip.y);
+            const ahead = Math.max(
+              Math.max(0, -skew * row) + Math.max(0, lead) * smoothStep(0, .72, grip.y),
+              Math.max(0, skew * (1 - row)) + Math.max(0, lead) * smoothStep(0, .72, 1 - grip.y)
+            );
+            centerRelease.edge = { skew, lead, ahead, angle: before };
+          }
         } else {
           advanceCenterTurn(centerRelease, end, Math.min(.048, interval / 1000));
         }
@@ -471,40 +508,81 @@ function trackFold(height, flat = false) {
         const limit = elapsed * .0075 + momentum * .0015;
         const delta = target.centerTurn - before;
         centerTurn = Math.abs(delta) <= limit ? target.centerTurn : before + Math.sign(delta) * limit;
-        centerVelocity = (centerTurn - before) / elapsed;
+        centerVelocity += ((centerTurn - before) / elapsed - centerVelocity) * Math.min(1, elapsed / 34);
         moving = centerTurn !== target.centerTurn;
       }
-      const contact = grip.finish ? smoothStep(0, .28, timeReleased) : 0;
+      const heldContact = .44 * smoothStep(2.45, 3.04, centerTurn);
+      const releaseContact = grip.finish ? smoothStep(0, .40, timeReleased) : 0;
+      const contact = heldContact * (grip.weight ?? 1) * (1 - releaseContact) + releaseContact;
       const tip = -looseTip * Math.sin(centerTurn);
-      const landing = contact * smoothStep(2.24, 2.76, centerTurn) * Math.min(.32, (Math.PI - centerTurn) * 1.1);
-      const skew = touch * Math.sin(centerTurn) * (1 - timeReleased) + (touch < 0 ? -1 : 1) * landing;
-      previous = { ...target, centerTurn, wave, tip, skew, contact, moving: wave !== wantedWave || moving };
+      const landing = contact * smoothStep(1.62, 2.66, centerTurn);
+      const balance = clamp((.5 - grip.y) * 2.3 + touch * .56, -1, 1);
+      const remaining = Math.PI - centerTurn;
+      const bend = Math.sin(centerTurn);
+      let skew = touch * bend * (1 - timeReleased) + balance * landing * Math.min(.94, remaining * 2.7);
+      let lead = bend * (smoothStep(.54, 1.72, centerTurn) * .45 - .12) + landing * Math.min(.29, remaining);
+      let upperDelay = 0;
+      let lowerDelay = 0;
+      if (centerRelease?.edge) {
+        const edge = centerRelease.edge;
+        // Let the rest of the sheet catch up with the leading corner as the paper straightens.
+        const shape = Math.min(remaining / Math.max(.001, Math.PI - edge.angle),
+          1 - smoothStep(0, Math.max(.001, 1.5 * edge.ahead), centerTurn - edge.angle));
+        skew = edge.skew * shape;
+        lead = edge.lead * shape;
+        // Extend the bend into the free corners while the middle of the edge makes contact.
+        const cornerDelay = .40 * smoothStep(0, .17, timeReleased) * smoothStep(2.32, 2.68, centerTurn) *
+          smoothStep(.31, .78, contact) * (1 - smoothStep(2.93, Math.PI, centerTurn));
+        upperDelay = cornerDelay * (1 + .12 * balance);
+        lowerDelay = cornerDelay * (1 - .12 * balance);
+      }
+      const ridgeMoving = wave > 0 && (waveCenter !== target.waveCenter || waveLean !== target.waveLean);
+      previous = { ...target, centerTurn, wave, waveCenter, waveLean, tip, skew, contact, lead, upperDelay, lowerDelay,
+        moving: wave !== wantedWave || ridgeMoving || moving };
       return previous;
     }
+    if (drag > .2) verticalMotion = smoothStep(.50, .91, Math.abs(dy) / drag);
+    else verticalMotion *= Math.exp(-elapsed / 45);
+    const side = Math.sign(target.nx);
+    const edgeFollow = grip?.point && grip.release === undefined
+      ? sideGripWeight(side, grip) * verticalMotion : 0;
+    // The timed fall can move the entire fold farther per frame than a held sheet.
+    const cornerFall = grip?.release !== undefined
+      ? cornerGripWeight(side, grip) * smoothStep(0, .21, grip.release) : 0;
+    const maxMotion = elapsed * (1.4 + 2.4 * edgeFollow + 4 * cornerFall) + momentum;
     const oldLimit = minimumFoldAxis(paper, height, previous.nx, previous.ny, flat ? 0 : previous.radius);
     if (previous[key] < oldLimit) previous = { ...previous, [key]: oldLimit };
+    const wantedFlex = flat ? 0 : target.flex;
+    const flexStep = .38 * elapsed;
+    const deltaFlex = wantedFlex - previous.flex;
+    const flex = Math.abs(deltaFlex) <= flexStep ? wantedFlex : previous.flex + Math.sign(deltaFlex) * flexStep;
+    const flexByRow = !flat && (previous.flex || flex)
+      ? points.map(v => smoothStep(0, .72, Math.abs(v - (grip?.y ?? .5)))) : undefined;
     function movement(candidate) {
       let max = 0;
       for (const u of points) {
         const x = paper.w * u;
-        for (const v of points) {
-          const y = paper.h * v;
-          const old = foldTravel(previous.nx * x + previous.ny * y - previous[key], flat ? 0 : previous.radius);
-          const next = foldTravel(candidate.nx * x + candidate.ny * y - candidate[key], flat ? 0 : candidate.radius);
+        for (let row = 0; row < points.length; row++) {
+          const y = paper.h * points[row];
+          const flex = flexByRow?.[row] ?? 0;
+          const old = foldTravel(previous.nx * x + previous.ny * y - previous[key] - previous.flex * flex,
+            flat ? 0 : previous.radius);
+          const next = foldTravel(candidate.nx * x + candidate.ny * y - candidate[key] - candidate.flex * flex,
+            flat ? 0 : candidate.radius);
           max = Math.max(max, Math.hypot(candidate.nx * next - previous.nx * old, candidate.ny * next - previous.ny * old));
         }
       }
       return max;
     }
-    if (movement(target) <= maxMotion) {
-      previous = { ...target, wave, moving: wave !== wantedWave };
+    const pending = flex === target.flex ? target : { ...target, flex };
+    if (movement(pending) <= maxMotion) {
+      previous = { ...pending, wave, moving: wave !== wantedWave || flex !== wantedFlex };
       return previous;
     }
 
     // Even if the closest crease changes abruptly, move through feasible intermediate folds.
     const oldAngle = Math.atan2(previous.ny, Math.abs(previous.nx));
     const newAngle = Math.atan2(target.ny, Math.abs(target.nx));
-    const side = Math.sign(target.nx);
     const offset = p => (p.nx * paper.w + p.ny * paper.h) / 2 - p[key];
     const oldOffset = offset(previous);
     const newOffset = offset(target);
@@ -519,7 +597,7 @@ function trackFold(height, flat = false) {
       const radius = previous.radius + (target.radius - previous.radius) * t;
       const axis = Math.max(minimumFoldAxis(paper, height, nx, ny, flat ? 0 : radius),
         (nx * paper.w + ny * paper.h) / 2 - oldOffset - (newOffset - oldOffset) * t);
-      const candidate = { ...target, nx, ny, radius, [key]: axis };
+      const candidate = { ...target, nx, ny, radius, flex, [key]: axis };
       if (movement(candidate) <= maxMotion) {
         low = t;
         next = candidate;
@@ -539,12 +617,17 @@ function paperArc(span, start, end) {
   return { x: radius * (Math.sin(end) - Math.sin(start)), z: radius * (Math.cos(start) - Math.cos(end)) };
 }
 
-function centerRoll(reach, width, angle, tip = -looseTip * Math.sin(angle), contact = 0) {
+function centerRoll(reach, width, angle, tip = -looseTip * Math.sin(angle), contact = 0, rootFraction = rootLength) {
   // Each arc uses the sheet's original length. After contact, the resting part continues flat.
+  const root = width * rootFraction * (1 - smoothStep(.08, 1.24, angle));
+  if (reach <= root) return { x: reach, z: 0, angle: 0 };
+  reach -= root;
+  width -= root;
   const bend = rollBend * width * Math.sin(angle);
   if (reach < bend) {
     const local = angle * reach / bend;
-    return { ...paperArc(reach, 0, local), angle: local };
+    const arc = paperArc(reach, 0, local);
+    return { x: root + arc.x, z: arc.z, angle: local };
   }
   const base = paperArc(bend, 0, angle);
   const available = width - bend;
@@ -552,7 +635,7 @@ function centerRoll(reach, width, angle, tip = -looseTip * Math.sin(angle), cont
   if (contact <= 0 || angle <= 2.20) {
     const local = angle + tip * outside / available;
     const edge = paperArc(outside, angle, local);
-    return { x: base.x + edge.x, z: base.z + edge.z, angle: local };
+    return { x: root + base.x + edge.x, z: base.z + edge.z, angle: local };
   }
   const blend = contact * smoothStep(2.20, 2.72, angle);
   const heldMiddle = angle + .48 * tip;
@@ -574,28 +657,33 @@ function centerRoll(reach, width, angle, tip = -looseTip * Math.sin(angle), cont
   const near = paperArc(first, angle, a);
   const far = paperArc(second, middle, b);
   return {
-    x: base.x + near.x + far.x - Math.max(0, outside - moving),
+    x: root + base.x + near.x + far.x - Math.max(0, outside - moving),
     z: base.z + near.z + far.z,
     angle: second > 0 ? b : a
   };
 }
 
-function centerTurnAngle(reach, width, grip) {
+function centerTurnAngle(reach, width, grip, wave, waveCenter, span, root) {
   const inward = Math.max(0, grip.inward);
   if (inward <= .008) return 0;
-  const position = (reach - inward * smoothStep(.008, .12, inward)) * width;
+  // Very short pulls at the spine should lift the sheet before turning it over.
+  const lever = Math.max(.28, reach);
+  const travel = inward * smoothStep(.008, .12, inward) * Math.min(1, lever / .34);
+  const position = (lever - travel) * width;
+  const ripple = paperWave(lever * width, width, wave, waveCenter, span);
   let low = 0;
   let high = Math.PI;
   for (let i = 0; i < 15; i++) {
     const angle = (low + high) / 2;
-    if (centerRoll(reach * width, width, angle).x > position) low = angle;
+    const roll = centerRoll(lever * width - ripple.loss, width, angle, undefined, 0, root);
+    if (roll.x - ripple.lift * Math.sin(roll.angle) > position) low = angle;
     else high = angle;
   }
   return (low + high) / 2;
 }
 
-function paperWave(reach, width, wave, center) {
-  const span = waveSpan * width;
+function paperWave(reach, width, wave, center, spanFraction = waveSpan) {
+  const span = spanFraction * width;
   const t = clamp((reach - center * width) / span + .5, 0, 1);
   const peakSlope = Math.PI * wave / span;
   return {
@@ -609,8 +697,23 @@ function centerGripWeight(reach) {
   return smoothStep(.25, .43, reach) * (1 - smoothStep(.64, .82, reach));
 }
 
+function outsideGrip(side, grip) {
+  return smoothStep(.76, .90, side > 0 ? grip.x : 1 - grip.x);
+}
+
+function sideGripWeight(side, grip) {
+  return outsideGrip(side, grip) * (1 - smoothStep(.34, .73, Math.abs(2 * grip.y - 1)));
+}
+
+export function cornerGripWeight(side, grip) {
+  return grip?.point ? outsideGrip(side, grip) * smoothStep(.52, .86, Math.abs(2 * grip.y - 1)) : 0;
+}
+
 export function isCenterGrip(side, grip) {
-  return Boolean(grip?.point && centerGripWeight(side > 0 ? grip.x : 1 - grip.x) >= .55);
+  if (!grip?.point) return false;
+  const reach = side > 0 ? grip.x : 1 - grip.x;
+  const rim = smoothStep(.50, .91, Math.abs(2 * grip.y - 1));
+  return reach <= .725 + .10 * rim;
 }
 
 function heldGeometry(paper, side, grip, rest) {
@@ -624,8 +727,11 @@ function heldGeometry(paper, side, grip, rest) {
   const dy = paper.y + y - grip.point.y + (2 * grip.y - 1) * lift * (1 - motion);
 
   const length = Math.hypot(dx, dy);
-  const heldNx = side * dx / length;
-  const heldNy = dy / length;
+  // Keep the crease from flipping steeply when a vertical pull changes direction.
+  const steady = dx + w * .16 * sideGripWeight(side, grip) * smoothStep(.002, .055, Math.abs(grip.vertical)) * weight;
+  const heldLength = Math.hypot(steady, dy);
+  const heldNx = side * steady / heldLength;
+  const heldNy = dy / heldLength;
   const anchor = heldNx * x + heldNy * y;
   const curl = Math.hypot(grip.inward * w, grip.vertical * h) / w;
   const radius = w * (.013 + .055 * smoothStep(0, .54, curl + lift / w));
@@ -635,11 +741,20 @@ function heldGeometry(paper, side, grip, rest) {
   const turning = smoothStep(.025, .32, grip.inward);
   const curlWeight = 1 - middle * (1 - turning);
   const raised = grip.held ? 1 : smoothStep(.008, .12, curl);
-  const wave = w * .073 * middle * raised * (1 - smoothStep(.09, .33, grip.inward)) * weight;
-  const waveCenter = clamp(reach, .23, .77);
-  if (middle >= .55) {
-    return { ...rest, overhang: weight, wave, waveCenter, centerTurn: centerTurnAngle(reach, w, grip) };
+  const liftWave = w * .073 * raised * (1 - smoothStep(.09, .33, grip.inward)) * weight;
+  if (isCenterGrip(side, grip)) {
+    // A grip near the spine lifts a shorter section and keeps the binding fixed.
+    const span = clamp(reach * 1.85, .12, waveSpan);
+    const root = Math.min(rootLength, reach * .72);
+    const wave = liftWave * Math.max(.68, middle) * (span / waveSpan);
+    const drift = .105 * smoothStep(.02, .30, grip.inward) * (span / waveSpan);
+    const half = span / 2 + .01;
+    const waveCenter = clamp(reach - drift, half, 1 - half);
+    const waveLean = clamp((.5 - grip.y) * .38 + grip.vertical * .68, -.24, .24);
+    return { ...rest, overhang: weight, wave, waveCenter, waveLean, waveSpan: span, centerRoot: root,
+      centerTurn: centerTurnAngle(reach, w, grip, wave, waveCenter, span, root) };
   }
+  const waveCenter = clamp(reach, .23, .77);
   const far = Math.max(0, heldNx * w) + Math.max(0, heldNy * h);
   const flatOffset = far - anchor;
   const heldOffset = flatOffset + (-pullAxis(travel, radius) - flatOffset) * curlWeight;
@@ -656,21 +771,24 @@ function heldGeometry(paper, side, grip, rest) {
     ...rest, nx: nx / normalLength, ny: ny / normalLength,
     axis: (nx * x + ny * y) / normalLength + offset,
     crease: (nx * x + ny * y) / normalLength + crease,
-    radius: mix(rest.radius, radius), overhang: weight, wave, waveCenter
+    radius: mix(rest.radius, radius), overhang: weight, wave: liftWave * middle, waveCenter
   };
 }
 
 function foldGeometry(paper, side, progress, tilt, grip, mesh = false) {
-  const slope = tilt * (1 - progress) ** .8;
+  const release = grip?.release ?? 0;
+  const corner = !mesh && release > 0 ? cornerGripWeight(side, grip) *
+    smoothStep(0, .36, release) * (1 - smoothStep(.43, .86, release)) : 0;
+  const slope = (tilt + ((grip?.y ?? .5) - .5) * .28 * corner) * (1 - progress) ** .8;
   const length = Math.hypot(1, slope);
   const nx = side / length;
   const ny = slope / length;
   const far = Math.max(0, nx * paper.w) + Math.max(0, ny * paper.h);
   const near = Math.min(0, nx * paper.w) + Math.min(0, ny * paper.h);
   const taper = mesh ? (grip?.taper ?? 0) * (grip?.weight ?? 1) : 0;
-  const flex = mesh && grip ? paper.w * .18 * (grip.weight ?? 1) *
-    smoothStep(0, .19, progress) * (1 - smoothStep(.43, .86, progress)) : 0;
-  const radius = Math.max(.7, paper.w * (.003 + (mesh ? .14 : .095) * Math.sin(progress * Math.PI)));
+  const flex = paper.w * (mesh && grip ? .18 * (grip.weight ?? 1) *
+    smoothStep(0, .19, progress) * (1 - smoothStep(.43, .86, progress)) : .042 * corner);
+  const radius = Math.max(.7, paper.w * (.003 + (mesh ? .14 : .095) * Math.sin(progress * Math.PI) + .014 * corner));
   let axis = far + (near - far - radius * .85) * progress;
   if (mesh && grip && !grip.reverse) {
     const outer = side > 0 ? Math.max(.56, grip.x) : Math.min(.44, grip.x);
@@ -728,7 +846,7 @@ export function createCurl(canvas, { mesh = false, adaptive = false } = {}) {
   const uniforms = {};
   for (const name of ['Stage', 'Page', 'Normal', 'Axis', 'Radius', 'Progress', 'HasBack', 'Bound',
     'Spine', 'SpineSide', 'Front', 'Back', 'FrontRegion', 'BackRegion', 'Taper', 'GripY', 'Flex', 'ShadowPass',
-    'Overhang', 'Adaptive', 'Wave', 'CenterTurn', 'CenterFlex']) {
+    'Overhang', 'Adaptive', 'Wave', 'WaveLean', 'CenterTurn', 'CenterRoot', 'CenterFlex', 'CenterCorners']) {
     uniforms[name] = gl.getUniformLocation(program, 'u' + name);
   }
 
@@ -783,7 +901,8 @@ export function createCurl(canvas, { mesh = false, adaptive = false } = {}) {
 
     return function draw(progress, tilt, geometry = paper, grip, time) {
       const pose = foldGeometry(geometry, side, progress, tilt, grip, mesh);
-      const { nx, ny, axis, radius, taper, flex, overhang, wave, waveCenter, centerTurn, tip, skew, contact, moving } = track
+      const { nx, ny, axis, radius, taper, flex, overhang, wave, waveCenter, waveLean,
+        waveSpan: span, centerTurn, centerRoot, tip, skew, contact, lead, upperDelay, lowerDelay, moving } = track
         ? track(geometry, pose, grip, time) : pose;
       gl.uniform4f(uniforms.Page, geometry.x, geometry.y, geometry.w, geometry.h);
       gl.uniform1f(uniforms.Spine, geometry.spine ?? (paper.side !== 'single' && paper.half === undefined ? 1 : 0));
@@ -798,9 +917,12 @@ export function createCurl(canvas, { mesh = false, adaptive = false } = {}) {
         gl.uniform1f(uniforms.Taper, taper);
         gl.uniform1f(uniforms.GripY, grip?.y ?? .5);
         gl.uniform1f(uniforms.Flex, flex);
-        gl.uniform2f(uniforms.Wave, wave ?? 0, waveCenter ?? .5);
+        gl.uniform3f(uniforms.Wave, wave ?? 0, waveCenter ?? .5, span ?? waveSpan);
+        gl.uniform1f(uniforms.WaveLean, waveLean ?? 0);
         gl.uniform1f(uniforms.CenterTurn, centerTurn ?? -1);
-        gl.uniform3f(uniforms.CenterFlex, tip ?? 0, skew ?? 0, contact ?? 0);
+        gl.uniform1f(uniforms.CenterRoot, centerRoot ?? rootLength);
+        gl.uniform4f(uniforms.CenterFlex, tip ?? 0, skew ?? 0, contact ?? 0, lead ?? 0);
+        gl.uniform2f(uniforms.CenterCorners, upperDelay ?? 0, lowerDelay ?? 0);
         gl.uniform1f(uniforms.ShadowPass, 1);
         gl.drawElements(gl.TRIANGLES, grid.length, gl.UNSIGNED_SHORT, 0);
         gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -859,53 +981,79 @@ export function createPaperFold(canvas) {
         }
       }
 
-      function paintCenter(pose, pageY) {
-        const count = 48;
+      function paintCenter(pose, pageY, gripY) {
+        const count = 42;
         const spine = side > 0 ? 0 : w;
         const topLimit = Math.min(0, 1 - pageY);
         const bottomLimit = Math.max(h, height - pageY - 1);
-        const strips = [];
-        function project(u) {
+        const profile = v => .44 * v + .56 * smoothStep(0, 1, v);
+        const gripProfile = profile(gripY);
+        function project(u, v) {
           const reach = (side > 0 ? u : 1 - u) * w;
-          const ripple = paperWave(reach, w, pose.wave ?? 0, pose.waveCenter ?? .5);
-          const roll = centerRoll(reach - ripple.loss, w, pose.centerTurn, pose.tip, pose.contact);
+          const row = v - gripY;
+          const wave = (pose.wave ?? 0) * (1 - .56 * smoothStep(.04, .77, Math.abs(row)));
+          const span = pose.waveSpan ?? waveSpan;
+          const center = clamp((pose.waveCenter ?? .5) + row * (pose.waveLean ?? 0), span / 2, 1 - span / 2);
+          const ripple = paperWave(reach, w, wave, center, span);
+          const lead = (pose.lead ?? 0) * smoothStep(0, .72, Math.abs(row));
+          const turn = clamp(pose.centerTurn + (pose.skew ?? 0) * (profile(v) - gripProfile) + lead, 0, Math.PI);
+          const delay = (pose.upperDelay ?? 0) * smoothStep(cornerContactStart, 1, 1 - v) +
+            (pose.lowerDelay ?? 0) * smoothStep(cornerContactStart, 1, v);
+          const roll = centerRoll(reach - ripple.loss, w, turn, pose.tip, pose.contact * (1 - delay), pose.centerRoot);
           const z = Math.max(0, roll.z + ripple.lift * Math.cos(roll.angle));
-          const perspective = Math.min(18, z * .12);
           return {
             x: spine + side * (roll.x - ripple.lift * Math.sin(roll.angle)),
-            z, angle: roll.angle, slope: side * ripple.slope * Math.cos(roll.angle),
-            top: Math.max(topLimit, -.42 * perspective - .28 * ripple.lift * .36),
-            bottom: Math.min(bottomLimit, h + .58 * perspective + .72 * ripple.lift * .36)
+            y: clamp(v * h + (v - .42) * Math.min(18, z * .12) + (v - .28) * ripple.lift * .36,
+              topLimit, bottomLimit),
+            z, angle: roll.angle, slope: side * ripple.slope * Math.cos(roll.angle)
           };
         }
-        let first = project(0);
-        for (let i = 0; i < count; i++) {
-          const last = project((i + 1) / count);
-          const mid = project((i + .5) / count);
-          strips.push({ ...mid, left: Math.min(first.x, last.x), width: Math.abs(last.x - first.x),
-            reverse: last.x < first.x, u: i / count });
-          first = last;
-        }
-        strips.sort((a, b) => a.z - b.z);
-        for (const strip of strips) {
-          if (strip.width < .01) continue;
-          const page = strip.reverse && back?.image ? back : paper;
-          const sourceWidth = page.image.naturalWidth * (page.half === undefined ? 1 : .5);
-          const u = strip.reverse && back?.image ? 1 - strip.u - 1 / count : strip.u;
-          const sourceX = ((page.half ?? 0) + u) * sourceWidth;
-          const height = strip.bottom - strip.top;
-          ctx.save();
-          if (strip.reverse && !back?.image) {
-            ctx.fillStyle = '#e6e6e6';
-            ctx.fillRect(strip.left, strip.top, strip.width + .4, height);
-            ctx.globalAlpha = .14;
+
+        const bands = pose.wave || pose.skew || pose.lead || pose.upperDelay || pose.lowerDelay ? 14 : 1;
+        const edge = v => Array.from({ length: count + 1 }, (_, i) => project(i / count, v));
+        let top = edge(0);
+        for (let band = 0; band < bands; band++) {
+          const bottom = edge((band + 1) / bands);
+          const strips = [];
+          for (let i = 0; i < count; i++) {
+            const [a, b, c, d] = [top[i], top[i + 1], bottom[i], bottom[i + 1]];
+            const dx = (b.x - a.x + d.x - c.x) / 2;
+            if (Math.abs(dx) < .04) continue;
+            const dy = (b.y - a.y + d.y - c.y) / 2;
+            strips.push({
+              i, dx, dy, x: (a.x + b.x - dx) / 2, y: (a.y + b.y - dy) / 2,
+              shift: (c.x + d.x - a.x - b.x) / 2, rise: (c.y + d.y - a.y - b.y) / 2,
+              z: (a.z + b.z + c.z + d.z) / 4, angle: (a.angle + b.angle + c.angle + d.angle) / 4,
+              slope: (a.slope + b.slope + c.slope + d.slope) / 4
+            });
           }
-          ctx.drawImage(page.image, sourceX, 0, sourceWidth / count, page.image.naturalHeight,
-            strip.left, strip.top, strip.width + .4, height);
-          ctx.restore();
-          const turnShade = (strip.reverse ? .17 : .32) * Math.sin(strip.angle) ** 2;
-          const shade = clamp(turnShade + .60 * strip.slope + .18 * strip.slope ** 2, -.18, .62);
-          tint(strip.left, strip.top, strip.width + .4, height, shade);
+          strips.sort((a, b) => a.z - b.z);
+          for (const strip of strips) {
+            const reverse = strip.dx < 0;
+            const page = reverse && back?.image ? back : paper;
+            const mirrored = reverse && page === back;
+            const sourceWidth = page.image.naturalWidth * (page.half === undefined ? 1 : .5);
+            const u = mirrored ? count - 1 - strip.i : strip.i;
+            const sourceX = ((page.half ?? 0) + u / count) * sourceWidth;
+            const sourceHeight = page.image.naturalHeight / bands;
+            const width = 1 + Math.min(.15, .55 / Math.abs(strip.dx));
+            const height = band + 1 === bands ? 1 : 1 + .55 / Math.max(1, strip.rise);
+            ctx.save();
+            ctx.transform(strip.dx, strip.dy, strip.shift, strip.rise, strip.x, strip.y);
+            if (reverse && !back?.image) {
+              ctx.fillStyle = '#e6e6e6';
+              ctx.fillRect(0, 0, width, height);
+              ctx.globalAlpha = .14;
+            }
+            if (mirrored) ctx.transform(-1, 0, 0, 1, width, 0);
+            ctx.drawImage(page.image, sourceX, sourceHeight * band, sourceWidth / count, sourceHeight, 0, 0, width, height);
+            ctx.globalAlpha = 1;
+            const turnShade = (reverse ? .17 : .32) * Math.sin(strip.angle) ** 2;
+            const shade = clamp(turnShade + .60 * strip.slope + .18 * strip.slope ** 2, -.18, .62);
+            tint(0, 0, width, height, shade);
+            ctx.restore();
+          }
+          top = bottom;
         }
       }
 
@@ -951,7 +1099,7 @@ export function createPaperFold(canvas) {
           ctx.clip();
         }
         if (centerTurn !== undefined) {
-          paintCenter(tracked, geometry.y);
+          paintCenter(tracked, geometry.y, grip.y);
         } else {
           ctx.save();
           clip(nx, ny, crease, 1);
