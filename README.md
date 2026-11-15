@@ -2,9 +2,9 @@
 
 Pliego es un lector local de cómics y manga para Windows. Abre **CBR, CBZ, RAR y ZIP**, guarda tu progreso y te deja pasar las páginas con el mouse como si sostuvieras el cómic.
 
-[**Descargar Pliego para Windows x64 (.exe)**](https://github.com/harex-analysis/Pliego/releases/download/v1.11.0/Pliego-Setup-x64.exe) · [ZIP portable](https://github.com/harex-analysis/Pliego/releases/download/v1.11.0/Pliego-1.11.0-windows-x64.zip) · [Notas de la versión y SHA-256](https://github.com/harex-analysis/Pliego/releases/tag/v1.11.0)
+[**Descargar Pliego para Windows x64 (.exe)**](https://github.com/harex-analysis/Pliego/releases/download/v1.11.1/Pliego-Setup-x64.exe) · [ZIP portable](https://github.com/harex-analysis/Pliego/releases/download/v1.11.1/Pliego-1.11.1-windows-x64.zip) · [Notas de la versión y SHA-256](https://github.com/harex-analysis/Pliego/releases/tag/v1.11.1)
 
-**Beta 1.11.0**, probada en Windows 11 x64. Licencia [MIT](LICENSE).
+**Beta 1.11.1**, probada en Windows 11 x64. Licencia [MIT](LICENSE).
 
 ![La portada de Eco nocturno se arquea al agarrarla desde el centro y se asienta sobre la página al girar](assets/giro-de-pagina.gif)
 
@@ -63,7 +63,7 @@ Pliego guarda tu progreso, el estado de lectura y el sentido de cada título de 
 2. Elige qué tomos descargar. Con varios seleccionados, puedes dejar marcada la opción **Crear grupo en Pliego**. El grupo usa el nombre del torrent.
 3. Pulsa **Descargar**. Pliego crea una subcarpeta con el nombre del torrent en `Descargas\Pliego`. Usa **Cambiar** para elegir otra ubicación. Si el nombre ya existe, Pliego añade un número. Los títulos compatibles aparecen en la biblioteca cuando termina la descarga.
 
-Puedes cerrar el cuadro y seguir leyendo durante la descarga. Si cierras Pliego, encontrarás la descarga pendiente al volver y podrás reanudarla. Pliego gestiona una descarga a la vez. Si el info hash tarda en encontrar fuentes, prueba con el magnet completo.
+Puedes cerrar el cuadro y seguir leyendo durante la descarga. Si cierras Pliego, encontrarás la descarga pendiente al volver y podrás reanudarla. Pliego gestiona una descarga a la vez y usa la red pública de BitTorrent. Si el info hash tarda en encontrar fuentes, prueba con el magnet completo.
 
 Al pulsar **Buscar archivos**, Pliego se conecta a BitTorrent. Otros participantes pueden ver tu IP y Pliego puede compartir fragmentos mientras descargas. [Protocolo DHT de BitTorrent](https://www.bittorrent.org/beps/bep_0005.html)
 

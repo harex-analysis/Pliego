@@ -1,8 +1,14 @@
-# Pliego 1.11.0 · Beta para Windows x64
+# Pliego 1.11.1 · Beta para Windows x64
 
 **Descarga `Pliego-Setup-x64.exe` y ábrelo.** El instalador incluye todos los componentes y agrega Pliego al menú Inicio y a la lista de aplicaciones de Windows. En la pantalla final puedes elegir **Crear un acceso directo en el escritorio**. La instalación es para tu usuario y funciona sin conexión una vez descargada.
 
-También puedes usar `Pliego-1.11.0-windows-x64.zip` como versión portable. Extrae la carpeta completa y abre `Pliego.exe`. La beta se ha probado en Windows 11 x64. El instalador y el lector van sin firma Authenticode, así que Windows puede mostrar un aviso según la configuración. Las sumas de los archivos están en `SHA256SUMS.txt`.
+También puedes usar `Pliego-1.11.1-windows-x64.zip` como versión portable. Extrae la carpeta completa y abre `Pliego.exe`. La beta se ha probado en Windows 11 x64. El instalador y el lector van sin firma Authenticode, así que Windows puede mostrar un aviso según la configuración. Las sumas de los archivos están en `SHA256SUMS.txt`.
+
+## Seguridad
+
+- Electron 45.3.3 incorpora los parches de seguridad de Node.js 24.22.3. El proceso de compilación comprueba el SHA-256 de los binarios descargados. [Electron 45.3.3](https://github.com/electron/electron/releases/tag/v45.3.3)
+- Pliego comprueba el formato del archivo antes de abrirlo y limita la extracción a ZIP y RAR.
+- BitTorrent bloquea direcciones locales y reservadas en las conexiones filtradas por libtorrent y descarta parámetros de origen ajenos a los admitidos por Pliego. [libtorrent 2.1.2](https://github.com/arvidn/libtorrent/releases/tag/v2.1.2)
 
 ## Actualizaciones
 

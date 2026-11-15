@@ -2,6 +2,7 @@ const { randomUUID } = require('node:crypto');
 
 const order = new Intl.Collator('es', { numeric: true, sensitivity: 'base' });
 const categories = new Set(['comic', 'manga']);
+const coverColumnOptions = new Set(['auto', '9', '6', '4']);
 const maxTitleLength = 255;
 
 function key(text) {
@@ -23,6 +24,7 @@ function loadLibrary(saved) {
     recentIds: Array.isArray(saved.recentIds) ? saved.recentIds :
       books.filter(item => !Array.isArray(saved.books) || item.page > 0 || item.read).map(item => item.id),
     groups: Array.isArray(saved.groups) ? saved.groups : [],
+    libraryColumns: coverColumnOptions.has(saved.libraryColumns) ? saved.libraryColumns : 'auto',
     settings: saved.settings || {},
     pageTurnTipSeen: saved.pageTurnTipSeen === true
   };
@@ -237,5 +239,5 @@ function applySuggestions(state, category, proposals) {
   state.groups = groups;
 }
 
-module.exports = { addBook, applySuggestions, bookTitle, categories, findGroup, libraryView, loadLibrary, renameBooks,
+module.exports = { addBook, applySuggestions, bookTitle, categories, coverColumnOptions, findGroup, libraryView, loadLibrary, renameBooks,
   reorder, suggestGroups, updateGroup };

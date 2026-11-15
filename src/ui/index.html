@@ -20,15 +20,22 @@
     <symbol id="i-left" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></symbol>
     <symbol id="i-right" viewBox="0 0 24 24"><path d="m10 6 6 6-6 6"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
-    <symbol id="i-down" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
     <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 6h16m-13 0 1 14h8l1-14M9 6V4h6v2m-5 4v6m4-6v6"/></symbol>
     <symbol id="i-order" viewBox="0 0 24 24"><path d="M7 5v14m-3-3 3 3 3-3M17 19V5m-3 3 3-3 3 3"/></symbol>
+    <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.15a1.9 1.9 0 0 0 1.55-3l-.35-.5a1.6 1.6 0 0 1 1.32-2.5H18a3 3 0 0 0 3-3 9 9 0 0 0-9-9Z"/><circle cx="7.6" cy="13" r=".65"/><circle cx="8.8" cy="8.7" r=".65"/><circle cx="12.8" cy="7.5" r=".65"/><circle cx="16.6" cy="9.8" r=".65"/></symbol>
+    <symbol id="i-mouse" viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 6.5v3.8"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3c.7 5.4 3.6 8.3 9 9-5.4.7-8.3 3.6-9 9-.7-5.4-3.6-8.3-9-9 5.4-.7 8.3-3.6 9-9Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5m7 7-7-7 7-7"/></symbol>
     <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4m-6 1-3 3a4 4 0 0 0 6 6l3-3m-4-8 3-3a4 4 0 0 1 6 6l-3 3"/></symbol>
   </svg>
   <header class="toolbar">
-    <button class="wordmark" id="home" type="button" title="Inicio" aria-label="Pliego, inicio">
+    <div class="wordmark" id="brand">
       <img class="brand-icon" src="/pliego.svg" alt="" width="27" height="27"><span>Pliego</span>
+    </div>
+    <button class="button reader-back" id="home" type="button" aria-label="Volver a la biblioteca" hidden>
+      <svg aria-hidden="true"><use href="#i-back"/></svg>Biblioteca
     </button>
     <div id="title" class="current-title"></div>
     <div class="toolbar-actions" id="tools" hidden>
@@ -61,13 +68,16 @@
             <button type="button" data-category="manga" aria-pressed="false">Mangas</button>
           </nav>
           <div class="library-add-actions">
-            <button id="library-add" class="button primary" type="button" aria-label="Añadir archivos" title="Añadir archivos (Ctrl+O)"><svg aria-hidden="true"><use href="#i-plus"/></svg><span>Añadir archivos</span></button>
-            <button id="torrent-open" class="icon-button" type="button" aria-label="Añadir por magnet o hash" title="Añadir por magnet o hash"><svg aria-hidden="true"><use href="#i-link"/></svg></button>
+            <div class="library-import-actions">
+              <button id="library-add" class="button primary" type="button" aria-keyshortcuts="Control+O" title="Añadir archivos (Ctrl+O)"><svg aria-hidden="true"><use href="#i-plus"/></svg>Añadir archivos</button>
+              <button id="torrent-open" class="icon-button secondary" type="button" aria-label="Añadir por magnet o hash" title="Añadir por magnet o hash"><svg aria-hidden="true"><use href="#i-link"/></svg></button>
+            </div>
+            <button id="library-options" class="button" type="button" aria-haspopup="menu" aria-expanded="false"><svg aria-hidden="true"><use href="#i-settings"/></svg>Opciones</button>
           </div>
         </header>
         <aside id="update-banner" hidden>
           <span id="update-message" role="status"></span>
-          <button id="update-download" class="button primary" type="button" title="Abrir la versión en GitHub">Descargar actualización</button>
+          <button id="update-download" class="button secondary" type="button" title="Abrir la versión en GitHub">Descargar actualización</button>
           <button id="update-dismiss" class="icon-button" type="button" aria-label="Ocultar aviso de actualización" title="Ocultar aviso de actualización">
             <svg aria-hidden="true"><use href="#i-close"/></svg>
           </button>
@@ -75,17 +85,32 @@
         <button id="torrent-summary" class="button" type="button" hidden></button>
         <div id="library-controls">
           <div class="library-tools">
-            <div id="group-list" aria-label="Grupos"></div>
-            <div class="library-actions">
-              <button id="group-edit" class="icon-button" type="button" aria-label="Opciones del grupo" hidden><svg><use href="#i-more"/></svg></button>
-              <button id="library-order" class="icon-button" type="button" aria-label="Ordenar portadas" aria-pressed="false" title="Ordenar portadas"><svg><use href="#i-order"/></svg></button>
-              <button id="library-select" class="button" type="button" aria-pressed="false" title="Arrastra desde un espacio vacío o usa Ctrl + clic o Mayús + clic">Seleccionar</button>
-              <button id="group-suggest" class="button" type="button" title="Buscar coincidencias por serie o nombre de archivo">Sugerir grupos</button>
+            <div id="library-search-box" role="search" aria-label="Biblioteca">
+              <svg aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="search" id="library-search" placeholder="Buscar títulos" aria-label="Buscar títulos en toda la biblioteca" aria-keyshortcuts="Control+F" autocomplete="off" spellcheck="false">
+              <button id="library-search-clear" class="icon-button" type="button" aria-label="Limpiar búsqueda" hidden><svg aria-hidden="true"><use href="#i-close"/></svg></button>
+            </div>
+            <div class="library-actions" id="library-actions">
+              <button id="library-cover-view" class="icon-button secondary" type="button" aria-label="Tamaño de portadas" title="Cambiar tamaño de portadas" aria-haspopup="menu" aria-expanded="false"><svg aria-hidden="true"><use href="#i-palette"/></svg></button>
+              <button id="group-edit" class="icon-button secondary" type="button" aria-label="Opciones del grupo" title="Opciones del grupo" aria-haspopup="menu" aria-expanded="false" hidden><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+              <button id="library-order" class="icon-button secondary" type="button" aria-label="Ordenar portadas" aria-pressed="false" title="Ordenar portadas"><svg aria-hidden="true"><use href="#i-order"/></svg></button>
+              <button id="library-select" class="icon-button secondary" type="button" aria-label="Seleccionar" title="Seleccionar portadas"><svg aria-hidden="true"><use href="#i-mouse"/></svg></button>
+              <button id="library-suggest" class="button secondary" type="button" aria-haspopup="dialog" aria-controls="library-dialog" aria-expanded="false"><svg aria-hidden="true"><use href="#i-sparkle"/></svg><span>Sugerir grupos</span></button>
+            </div>
+          </div>
+          <div id="library-groups" class="library-groups" hidden>
+            <div id="group-list" role="group" aria-label="Grupos de esta pestaña"></div>
+            <div class="group-actions">
+              <button id="group-browser" class="button secondary" type="button" aria-haspopup="dialog" hidden>Ver grupos</button>
+              <button id="group-new" class="button secondary" type="button" aria-haspopup="dialog"><svg aria-hidden="true"><use href="#i-plus"/></svg>Nuevo grupo</button>
             </div>
           </div>
           <div id="selection-bar" hidden>
-            <span id="selection-count" role="status"></span>
-            <button id="selection-all" class="button" type="button">Seleccionar todo</button>
+            <div class="selection-summary">
+              <span id="selection-count" role="status"></span>
+              <button id="selection-all" class="button" type="button">Seleccionar todo</button>
+              <button id="selection-done" class="button secondary" type="button">Terminar selección</button>
+            </div>
             <div class="selection-actions">
               <button id="selection-rename" class="button" type="button">Renombrar…</button>
               <button id="selection-category" class="button" type="button" disabled>Mover a…</button>
@@ -96,10 +121,10 @@
           <div id="order-bar" hidden><span>Arrastra las portadas para cambiar el orden.</span><button id="order-done" class="button" type="button">Listo</button></div>
         </div>
       </div>
-      <div id="library-empty" hidden><svg aria-hidden="true"><use href="#i-book"/></svg><p></p></div>
+      <div id="library-empty" hidden><svg aria-hidden="true"><use href="#i-book"/></svg><p role="status"></p><small id="library-drop-hint">Arrastra un CBR o CBZ aquí</small></div>
       <section aria-label="Portadas"><div id="recent-list"></div></section>
     </div>
-    <div id="selection-rectangle" aria-hidden="true" hidden></div>
+    <div id="selection-rectangle" class="selection-rectangle" aria-hidden="true" hidden></div>
   </main>
   <main id="reading" hidden>
     <div id="stage" class="stage" tabindex="-1" aria-label="Visor de cómic">
@@ -133,21 +158,27 @@
   </form>
   <section id="options" class="popover" aria-label="Ajustes de lectura" hidden>
     <h2>Ajustes de lectura</h2>
-    <label for="layout-option">Vista de página</label>
-    <select id="layout-option">
-      <option value="auto">Automática</option>
-      <option value="single">Una página</option>
-      <option value="double">Dos páginas</option>
-    </select>
-    <label class="check"><input id="rtl-option" type="checkbox"> Manga de derecha a izquierda</label>
-    <label class="check"><input id="motion-option" type="checkbox"> Giro de papel</label>
-    <label class="check"><input id="sound-option" type="checkbox"> Sonido de papel</label>
-    <label for="paper-mode-option" hidden>Laboratorio de papel</label>
-    <select id="paper-mode-option" hidden>
-      <option value="classic">Giro actual</option>
-      <option value="adaptive" selected>Pliegue adaptable</option>
-      <option value="mesh">Hoja en 3D</option>
-    </select>
+    <fieldset>
+      <legend>Sentido de lectura de este título</legend>
+      <label class="check"><input id="rtl-option" type="checkbox"> De derecha a izquierda</label>
+    </fieldset>
+    <fieldset>
+      <legend>Preferencias generales</legend>
+      <label for="layout-option">Vista de página</label>
+      <select id="layout-option">
+        <option value="auto">Automática al abrir</option>
+        <option value="single">Una página</option>
+        <option value="double">Dos páginas</option>
+      </select>
+      <label class="check"><input id="motion-option" type="checkbox"> Giro de papel</label>
+      <label class="check"><input id="sound-option" type="checkbox"> Sonido de papel</label>
+      <label for="paper-mode-option" hidden>Laboratorio de papel</label>
+      <select id="paper-mode-option" hidden>
+        <option value="classic">Giro actual</option>
+        <option value="adaptive" selected>Pliegue adaptable</option>
+        <option value="mesh">Hoja en 3D</option>
+      </select>
+    </fieldset>
   </section>
   <aside id="recent-preview" aria-hidden="true" hidden>
     <div class="preview-art"><img id="preview-image" alt=""><span id="preview-message"></span></div>
@@ -161,6 +192,7 @@
       <p id="library-dialog-error" role="alert" hidden></p>
       <footer><button id="library-cancel" class="button" type="button">Cancelar</button><button id="library-submit" class="button primary" type="submit">Guardar</button></footer>
     </form>
+    <div id="picker-selection-rectangle" class="selection-rectangle" aria-hidden="true" hidden></div>
   </dialog>
   <dialog id="torrent-dialog" aria-labelledby="torrent-title">
     <form id="torrent-form">
@@ -169,7 +201,7 @@
         <div id="torrent-input-row">
           <label for="torrent-input">Magnet o info hash</label>
           <input id="torrent-input" type="text" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="Pega un enlace magnet o un info hash" aria-describedby="torrent-network-note">
-          <p id="torrent-network-note">Al buscar, Pliego se conecta a BitTorrent. Otros participantes pueden ver tu IP y Pliego puede compartir fragmentos mientras descargas.</p>
+          <p id="torrent-network-note">Al buscar, Pliego se conecta a la red pública de BitTorrent. Otros participantes pueden ver tu IP y Pliego puede compartir fragmentos mientras descargas.</p>
         </div>
         <div id="torrent-selection" hidden>
           <h3 id="torrent-name"></h3>

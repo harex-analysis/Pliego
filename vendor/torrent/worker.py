@@ -1,5 +1,6 @@
 """One libtorrent session, controlled by Pliego over a private JSON-lines pipe."""
 
+from ipaddress import ip_network
 import json
 from pathlib import Path
 import queue
@@ -23,24 +24,43 @@ def read_commands(inbox):
     inbox.put({"command": "stop"})
 
 
-def run():
+def public_network_filter():
+    result = lt.ip_filter()
+    blocked = 1  # libtorrent ip_filter::blocked is not exposed by the wheel.
+    # Block local and special IPv4 ranges, and require IPv6 global unicast.
+    for prefix in (
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+        "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+        "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
+        "203.0.113.0/24", "224.0.0.0/3", "::/3", "4000::/2", "8000::/1",
+        "2001::/23", "2001:db8::/32", "2002::/16", "3fff::/20",
+    ):
+        network = ip_network(prefix)
+        result.add_rule(str(network.network_address), str(network.broadcast_address), blocked)
+    return result
+
+
+def run(make_filter=public_network_filter):
     inbox = queue.Queue()
     threading.Thread(target=read_commands, args=(inbox,), daemon=True).start()
     config = inbox.get()
     if config["command"] != "probe":
         return
     cache = Path(config["cache"])
-    dht_cache = cache.with_name("dht.dat")
+    dht_cache = cache.with_name("dht-public.dat")
     dht_flag = lt.save_state_flags_t.save_dht_state
     try:
         session_params = lt.read_session_params(dht_cache.read_bytes(), dht_flag)
     except (OSError, RuntimeError):
         session_params = lt.session_params()
+    session_params.ip_filter = make_filter()
     session_params.settings = {
         "enable_upnp": False,
         "enable_natpmp": False,
         "enable_lsd": False,
         "ssrf_mitigation": True,
+        "apply_ip_filter_to_trackers": True,
+        "apply_filter_to_dht": True,
         "validate_https_trackers": True,
         "max_metadata_size": 8 * 1024 * 1024,
         "alert_mask": (lt.alert.category_t.error_notification |
@@ -59,6 +79,7 @@ def run():
     def params():
         value = lt.parse_magnet_uri(magnet)
         value.flags &= ~(lt.torrent_flags.auto_managed | lt.torrent_flags.paused)
+        value.flags |= lt.torrent_flags.apply_ip_filter
         return value
 
     def report_metadata():

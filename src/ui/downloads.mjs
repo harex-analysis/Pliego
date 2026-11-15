@@ -12,7 +12,7 @@ function bytes(value) {
   return Math.max(1, Math.round(value / 1024)) + ' KB';
 }
 
-export async function createDownloads(byId, library) {
+export function createDownloads(byId, library) {
   const api = window.pliego;
   const dialog = byId('torrent-dialog');
   const field = byId('torrent-input');
@@ -23,6 +23,7 @@ export async function createDownloads(byId, library) {
   const secondary = byId('torrent-secondary');
   const libraryActions = byId('torrent-library-actions');
   const summary = byId('torrent-summary');
+  const link = byId('torrent-open');
   const status = byId('torrent-status');
   const progress = status.querySelector('progress');
   const error = byId('torrent-error');
@@ -164,21 +165,21 @@ export async function createDownloads(byId, library) {
     }
   }
 
-  function open(event) {
+  function open(control) {
     if (dialog.open) return;
     library.hideOverlays();
     library.clearMessage();
-    anchor = event.currentTarget;
+    anchor = control;
     render();
     dialog.showModal();
     if (!byId('torrent-input-row').hidden) field.focus();
   }
-  byId('torrent-open').addEventListener('click', open);
-  summary.addEventListener('click', open);
+  link.addEventListener('click', () => open(link));
+  summary.addEventListener('click', () => open(summary));
   byId('torrent-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {
     if (!viewAfterClose) {
-      (anchor?.hidden ? byId('torrent-open') : anchor)?.focus();
+      (anchor?.hidden ? link : anchor)?.focus();
       return;
     }
     library.showCategory(viewAfterClose);
@@ -242,8 +243,9 @@ export async function createDownloads(byId, library) {
     lastEvent++;
     setJob(next);
   });
-  const initial = await api.torrentInitial();
-  defaultFolder = initial?.defaultFolder;
-  if (!lastEvent) setJob(initial?.job);
-  else render();
+  api.torrentInitial().then(initial => {
+    defaultFolder = initial?.defaultFolder;
+    if (!lastEvent) setJob(initial?.job);
+    else render();
+  }).catch(console.error);
 }

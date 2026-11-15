@@ -1,6 +1,7 @@
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { mkdir, readFile, rename, realpath, stat, statfs, unlink, writeFile } = require('node:fs/promises');
+const { isIP } = require('node:net');
 const path = require('node:path');
 const { createInterface } = require('node:readline');
 
@@ -15,16 +16,23 @@ function magnetLink(value) {
   if (/^[\da-f]{64}$/i.test(input)) return 'magnet:?xt=urn:btmh:1220' + input;
   if (/^1220[\da-f]{64}$/i.test(input)) return 'magnet:?xt=urn:btmh:' + input;
   if (/^magnet:\?/i.test(input) && !/[\s\x00-\x1f#]/u.test(input)) {
-    const parts = input.slice(8).split('&');
     const parameters = new URLSearchParams(input.slice(8));
     const topics = parameters.getAll('xt');
     if (topics.length && topics.every(value => topic.test(value))) {
+      const allowed = topics.map(value => 'xt=' + value.toLowerCase());
       for (const [key, value] of parameters) {
         if (key === 'tr' && !validSource(value, ['http:', 'https:', 'udp:'])) throw Error('El magnet contiene un rastreador no compatible.');
         if (key === 'ws' && !validSource(value, ['http:', 'https:'])) throw Error('El magnet contiene una fuente web no compatible.');
+        if (['dn', 'tr', 'ws'].includes(key)) allowed.push(key + '=' + encodeURIComponent(value));
+        if (key === 'x.pe') {
+          const peer = /^(?:\[([\da-f:.]+)\]|([\d.]+)):(\d{1,5})$/i.exec(value);
+          if (peer && isIP(peer[1] || peer[2]) === (peer[1] ? 6 : 4) && Number(peer[3]) > 0 && Number(peer[3]) <= 65535) {
+            // libtorrent reads peer endpoints directly, including the colon and brackets.
+            allowed.push('x.pe=' + value);
+          }
+        }
       }
-      return 'magnet:?' + parts.filter(part => !new URLSearchParams(part).has('xt'))
-        .concat(topics.map(value => 'xt=' + value.toLowerCase())).join('&');
+      return 'magnet:?' + allowed.join('&');
     }
   }
   throw Error('Pega un enlace magnet o un info hash válido.');
@@ -79,7 +87,8 @@ async function reserveFolder(parent, name, size) {
   throw Error('Elige otra carpeta de destino.');
 }
 
-async function createTransfers({ runtime, dataDir, defaultFolder, importBooks, notify }) {
+async function createTransfers({ runtime, dataDir, defaultFolder, importBooks, notify,
+  workerScript = path.join(runtime, 'worker.py') }) {
   const ledger = path.join(dataDir, 'active.json');
   let job;
   let worker;
@@ -180,10 +189,10 @@ async function createTransfers({ runtime, dataDir, defaultFolder, importBooks, n
     }
   }
 
-  function launch() {
+  function launch(magnet) {
     const current = job;
     const proc = spawn(path.join(runtime, 'runtime', 'python.exe'), [
-      '-I', '-B', '-u', path.join(runtime, 'worker.py')
+      '-I', '-B', '-u', workerScript
     ], { windowsHide: true, cwd: path.join(runtime, 'runtime'), stdio: ['pipe', 'pipe', 'pipe'] });
     worker = proc;
     proc.stdin.on('error', () => {});
@@ -239,7 +248,7 @@ async function createTransfers({ runtime, dataDir, defaultFolder, importBooks, n
       }
       completion?.catch(console.error);
     });
-    send('probe', { magnet: job.magnet, cache: job.cache });
+    send('probe', { magnet, cache: current.cache });
   }
 
   async function command(action, value = {}) {
@@ -258,7 +267,7 @@ async function createTransfers({ runtime, dataDir, defaultFolder, importBooks, n
           job = { id, magnet, cache: path.join(dataDir, id + '.resume'),
             category: value.category === 'manga' ? 'manga' : 'comic', phase: 'searching' };
           await persist();
-          launch();
+          launch(magnet);
           break;
         }
         case 'download': {
@@ -297,12 +306,14 @@ async function createTransfers({ runtime, dataDir, defaultFolder, importBooks, n
           if (cache) await unlink(cache).catch(() => {});
           break;
         }
-        case 'resume':
+        case 'resume': {
           if (!job?.plan || !['paused', 'error'].includes(job.phase)) break;
+          const magnet = magnetLink(job.magnet);
           patch({ phase: 'checking', error: undefined });
           await workerExit;
-          launch();
+          launch(magnet);
           break;
+        }
         case 'dismiss':
           if (active.has(job?.phase)) break;
           if (job?.cache) await unlink(job.cache).catch(() => {});

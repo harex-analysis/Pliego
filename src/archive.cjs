@@ -1,6 +1,6 @@
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { stat } = require('node:fs/promises');
+const { open, stat } = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { imageSize } = require('image-size');
@@ -15,6 +15,22 @@ const imageTypes = {
 const maxPageBytes = 80 * 1024 * 1024;
 const maxCacheBytes = 48 * 1024 * 1024;
 const maxPagePixels = 48_000_000;
+const zipHeaders = new Set(['504b0304', '504b0506', '504b0606', '504b0708', '504b0000']);
+
+async function archiveType(filename) {
+  const file = await open(filename, 'r');
+  try {
+    const header = Buffer.alloc(8);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    const signature = header.toString('hex', 0, bytesRead);
+    if (zipHeaders.has(signature.slice(0, 8))) return '-tzip';
+    if (signature.startsWith('526172211a0700')) return '-trar';
+    if (signature === '526172211a070100') return '-trar5';
+    throw new Error('El archivo debe estar en formato ZIP o RAR.');
+  } finally {
+    await file.close();
+  }
+}
 
 function checkImage(data) {
   let size;
@@ -33,11 +49,12 @@ async function openArchive(filename, extractor, { metadata = false } = {}) {
   if (!(await stat(filename)).isFile()) {
     throw new Error('Elige un archivo de cómic.');
   }
+  const typeSwitch = await archiveType(filename);
   const options = { windowsHide: true, timeout: 45_000 };
   let listing;
   try {
     ({ stdout: listing } = await run(extractor, [
-      'l', '-slt', '-sccUTF-8', '-pPliego', '--', filename
+      'l', typeSwitch, '-slt', '-sccUTF-8', '-pPliego', '--', filename
     ], { ...options, maxBuffer: 16 * 1024 * 1024 }));
   } catch (error) {
     if (/password|encrypted/i.test(String(error.stderr))) {
@@ -90,7 +107,7 @@ async function openArchive(filename, extractor, { metadata = false } = {}) {
 
   async function extract(index, entry) {
     const { stdout: data } = await run(extractor, [
-      'x', '-so', '-spd', '-y', '-pPliego', '--', filename, entry.name
+      'x', typeSwitch, '-so', '-spd', '-y', '-pPliego', '--', filename, entry.name
     ], {
       ...options, signal: controller.signal, encoding: 'buffer', maxBuffer: maxPageBytes
     });
@@ -117,7 +134,7 @@ async function openArchive(filename, extractor, { metadata = false } = {}) {
     if (infoEntry) {
       try {
         const { stdout: xml } = await run(extractor, [
-          'x', '-so', '-spd', '-y', '-pPliego', '--', filename, infoEntry
+          'x', typeSwitch, '-so', '-spd', '-y', '-pPliego', '--', filename, infoEntry
         ], { ...options, maxBuffer: 256 * 1024, encoding: 'buffer' });
         info = parseComicInfo(xml);
       } catch {}

@@ -12,6 +12,12 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const vendor = path.join(root, 'vendor');
 const cache = path.join(root, '.cache', 'vendor');
 export const components = {
+  electron: {
+    version: '45.3.3',
+    name: 'electron-v45.3.3-win32-x64.zip',
+    url: 'https://github.com/electron/electron/releases/download/v45.3.3/electron-v45.3.3-win32-x64.zip',
+    sha256: '49dd2d3875944f08de03d34595cd30093c588b9edcabb41a0ac481028a3a5a8a'
+  },
   zip: {
     name: '7z2606-x64.exe',
     url: 'https://github.com/ip7z/7zip/releases/download/26.06/7z2606-x64.exe',
@@ -28,9 +34,9 @@ export const components = {
     sha256: '7e93813bd362c6413f30788b248590e2f169df2d17dcac81aafbcc7a6eeb542c'
   },
   torrent: {
-    name: 'libtorrent-2.0.15-cp313-cp313-win_amd64.whl',
-    url: 'https://files.pythonhosted.org/packages/31/f4/977cdcf832cfdc7880dcdeefdc5be5748ad1155f7e1a969657b37f6cf72a/libtorrent-2.0.15-cp313-cp313-win_amd64.whl',
-    sha256: 'c6ab6445adc0b69003a56dd254c50c0ee9da681bcd08cdb719be6f34c677df72'
+    name: 'libtorrent-2.1.2-cp313-cp313-win_amd64.whl',
+    url: 'https://github.com/arvidn/libtorrent/releases/download/v2.1.2/libtorrent-2.1.2-cp313-cp313-win_amd64.whl',
+    sha256: 'c004c5fb578d24cf40a412c5b768b238d3dc06c2ccef3c49ef77cdd87d88bb11'
   }
 };
 
@@ -78,6 +84,7 @@ export async function prepareVendor() {
   }
   const windowsZip = path.join(vendor, '7zip');
   const runtime = path.join(vendor, 'torrent', 'runtime');
+  const electronRuntime = path.join(cache, 'electron');
   const stamp = path.join(cache, 'installed.json');
   const inputs = [await sha256(fileURLToPath(import.meta.url)), await sha256(path.join(root, 'licenses', 'LGPL-2.1.txt'))];
   async function digestTree(directory) {
@@ -86,7 +93,7 @@ export async function prepareVendor() {
       .map(entry => path.join(entry.parentPath, entry.name)).sort();
     return Promise.all(entries.map(async file => [path.relative(vendor, file), await sha256(file)]));
   }
-  const digests = () => Promise.all([digestTree(windowsZip), digestTree(runtime)]);
+  const digests = () => Promise.all([digestTree(windowsZip), digestTree(runtime), digestTree(electronRuntime)]);
   const manifest = JSON.stringify({ components, inputs });
   try {
     const saved = JSON.parse(await readFile(stamp, 'utf8'));
@@ -95,15 +102,18 @@ export async function prepareVendor() {
     if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
   }
 
-  const [zip, python, torrent] = await Promise.all([
-    download(components.zip), download(components.python), download(components.torrent)
+  const [zip, python, torrent, electronZip] = await Promise.all([
+    download(components.zip), download(components.python), download(components.torrent), download(components.electron)
   ]);
   await mkdir(path.join(vendor, 'torrent'), { recursive: true });
   const work = await mkdtemp(path.join(tmpdir(), 'pliego-vendor-'));
   try {
     const archive = path.join(work, '7zip');
     const preparedPython = path.join(work, 'python');
+    const preparedElectron = path.join(work, 'electron');
     await mkdir(archive);
+    await mkdir(preparedElectron);
+    extract(electronZip, preparedElectron);
     extract(zip, archive, ['7z.exe', '7z.dll', 'License.txt']);
     extract(python, work, [
       '--exclude=*.pdb', '--exclude=python/Lib/site-packages', '--exclude=python/Lib/test',
@@ -114,13 +124,15 @@ export async function prepareVendor() {
     extract(torrent, preparedPython);
     await writeFile(path.join(preparedPython, 'python313._pth'), 'Lib\nDLLs\n.\n');
     execFileSync(path.join(preparedPython, 'python.exe'), [
-      '-I', '-B', '-c', 'import libtorrent, sys; assert sys.version_info[:3] == (3, 13, 18) and libtorrent.version == "2.0.15.0"'
+      '-I', '-B', '-c', 'import libtorrent, sys; assert sys.version_info[:3] == (3, 13, 18) and libtorrent.version == "2.1.2.0"'
     ], { windowsHide: true, stdio: 'inherit' });
     await copyFile(path.join(root, 'licenses', 'LGPL-2.1.txt'), path.join(archive, 'LGPL-2.1.txt'));
     await rm(windowsZip, { recursive: true, force: true });
     await rm(runtime, { recursive: true, force: true });
+    await rm(electronRuntime, { recursive: true, force: true });
     await cp(archive, windowsZip, { recursive: true });
     await cp(preparedPython, runtime, { recursive: true });
+    await cp(preparedElectron, electronRuntime, { recursive: true });
     await writeFile(stamp, JSON.stringify({ manifest, digests: await digests() }));
   } finally {
     await rm(work, { recursive: true, force: true });

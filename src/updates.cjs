@@ -34,10 +34,12 @@ function newestUpdate(releases, installed) {
 }
 
 function createUpdateCheck(installed, fetchRelease) {
-  let result;
+  let lastResult;
+  let inFlight;
+  let lastManualCheck = -Infinity;
   let available;
 
-  async function check() {
+  async function request() {
     try {
       const response = await fetchRelease(releasesApi, {
         headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
@@ -45,14 +47,35 @@ function createUpdateCheck(installed, fetchRelease) {
         redirect: 'error',
         signal: AbortSignal.timeout(6000)
       });
-      if (response.ok) available = newestUpdate(await response.json(), installed);
+      if (response.ok) {
+        const releases = await response.json();
+        if (Array.isArray(releases)) {
+          available = newestUpdate(releases, installed);
+          return available ? { status: 'available', update: available } : { status: 'current' };
+        }
+      }
     } catch {} // Update checks are optional when GitHub or the network is unavailable.
-    return available ?? null;
+    return { status: 'unavailable' };
+  }
+
+  function check(manual = false) {
+    if (inFlight) return inFlight;
+    const now = Date.now();
+    if (lastResult && (!manual || now - lastManualCheck < 750)) return Promise.resolve(lastResult);
+    if (manual) lastManualCheck = now;
+    inFlight = request().then(result => {
+      lastResult = result;
+      inFlight = undefined;
+      return result;
+    });
+    return inFlight;
   }
 
   return {
-    check: () => result ??= check(),
-    releasePage: () => available ? releasesPage + '/tag/v' + available.version : null
+    check: async () => (await check()).update ?? null,
+    refresh: () => check(true),
+    releasePage: () => available ? releasesPage + '/tag/v' + available.version : null,
+    notesPage: () => releasesPage
   };
 }
 

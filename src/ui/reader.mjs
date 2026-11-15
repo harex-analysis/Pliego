@@ -40,7 +40,7 @@ let chromeEdgeArmed = false;
 let chromeOverControls = false;
 let thumbObserver;
 let audioContext;
-let previousDouble;
+let automaticDouble = false;
 let pageTurnTipSeen = false;
 const paperFold = createPaperFold(paperCanvas);
 
@@ -146,11 +146,14 @@ async function openComic(action) {
     byId('reading').hidden = false;
     byId('navigation').hidden = false;
     byId('tools').hidden = false;
+    byId('brand').hidden = true;
+    byId('home').hidden = false;
     byId('title').textContent = book.title;
     byId('title').title = book.title;
     byId('rtl-option').checked = book.rtl;
     scrubber.max = book.count;
     byId('page-number').max = book.count;
+    automaticDouble = fitsDoubleView();
     await showPage(result.page);
     pageTurnTip.hidden = pageTurnTipSeen || !settings.motion || book.count < 2;
     stage.focus({ preventScroll: true });
@@ -164,8 +167,12 @@ async function openComic(action) {
 }
 
 function doubleView() {
-  return settings.layout === 'double' ||
-    (settings.layout === 'auto' && stage.clientWidth >= 740 && stage.clientWidth / stage.clientHeight >= 1.13);
+  return settings.layout === 'double' || (settings.layout === 'auto' && automaticDouble);
+}
+
+function fitsDoubleView() {
+  const { clientWidth: width, clientHeight: height } = stage;
+  return width >= 740 && width >= height * 1.13;
 }
 
 async function loadSpread(comic, index, double) {
@@ -178,14 +185,11 @@ async function showPage(index) {
   if (!book) return;
   cancelTurn();
   const comic = book;
-  const double = doubleView();
-  previousDouble = double;
   const request = Symbol();
   signature = request;
   changing = true;
-  const spread = await loadSpread(comic, index, double);
+  const spread = await loadSpread(comic, index, doubleView());
   if (signature !== request || book !== comic) return false;
-  if (double !== doubleView()) return showPage(index);
   const previousSheets = settings.motion && index === pageIndex && current &&
     current.indices.length !== spread.indices.length ? positioned(current) : null;
   changing = false;
@@ -198,9 +202,7 @@ function commit(spread, index = spread.indices[0]) {
   const turned = Boolean(current && pageIndex !== index);
   current = spread;
   pageIndex = index;
-  pan.x = 0;
-  pan.y = 0;
-  pan.y = topPan(spread);
+  Object.assign(pan, readingPan(spread));
   render();
   controls();
   library.progress(book.id, pageIndex, turned);
@@ -225,10 +227,16 @@ function positioned(spread, offset = pan) {
   });
 }
 
-function topPan(spread) {
-  if (zoom === 1) return 0;
-  const [sheet] = positioned(spread, { x: 0, y: 0 });
-  return Math.max(0, (sheet.h - stage.clientHeight) / 2);
+function readingPan(spread) {
+  const offset = { x: 0, y: 0 };
+  if (zoom === 1) return offset;
+  const sheets = positioned(spread, offset);
+  const first = sheets[0];
+  const last = sheets.at(-1);
+  const width = last.x + last.w - first.x;
+  offset.x = Math.max(0, (width - stage.clientWidth) / 2) * (book.rtl ? -1 : 1);
+  offset.y = Math.max(0, (first.h - stage.clientHeight) / 2);
+  return offset;
 }
 
 function rectangle(element, sheet) {
@@ -330,13 +338,16 @@ function physicalSide(direction) {
 
 function hitEdge(position, sheets = current && positioned(current)) {
   if (!sheets) return 0;
+  const closeUp = zoom > 1;
+  const lip = closeUp ? 0 : 24;
   for (const direction of [1, -1]) {
     if (!neighbors.has(direction)) continue;
     const side = physicalSide(direction);
     const sheet = side > 0 ? sheets.at(-1) : sheets[0];
     const edge = side > 0 ? sheet.x + sheet.w : sheet.x;
-    const edgeWidth = Math.min(96, sheet.w * .24);
-    if (Math.abs(position.x - edge) <= edgeWidth && position.y >= sheet.y - 24 && position.y <= sheet.y + sheet.h + 24) return direction;
+    if (closeUp && (edge < 0 || edge > stage.clientWidth)) continue;
+    const edgeWidth = closeUp ? Math.min(24, sheet.w * .12) : Math.min(96, sheet.w * .24);
+    if (Math.abs(position.x - edge) <= edgeWidth && position.y >= sheet.y - lip && position.y <= sheet.y + sheet.h + lip) return direction;
   }
   return 0;
 }
@@ -373,8 +384,9 @@ function startTurn(direction, target) {
   if (!current || activeTurn || !settings.motion) return null;
   const side = physicalSide(direction);
   const original = turningLeaves(positioned(current));
-  const next = turningLeaves(positioned(target, { x: 0, y: topPan(target) }));
   const sheet = side > 0 ? original.at(-1) : original[0];
+  if (zoom > 1 && (sheet.x >= stage.clientWidth || sheet.x + sheet.w <= 0)) return null;
+  const next = turningLeaves(positioned(target, readingPan(target)));
   const draw = original.length !== next.length
     ? bookTurn(original, next, side)
     : original.length === 2 ? spreadTurn(original, next, side) : singleTurn(sheet, next[0], side);
@@ -702,22 +714,25 @@ stage.addEventListener('pointerdown', event => {
   const leafDirection = free ? leaf : 0;
   const middle = (sheets[0].x + sheets.at(-1).x + sheets.at(-1).w) / 2;
   const preferred = physicalSide(position.x >= middle ? 1 : -1);
-  const type = zoom > 1 && !edge && !rim ? 'pan' : 'page';
+  const type = zoom > 1 ? 'pan' : 'page';
   const interaction = { type, edge, onPage, rim, start: position, last: position,
     direction: edge, leafDirection, preferred: leafDirection || (neighbors.has(preferred) ? preferred : -preferred),
     moved: false, startTime: performance.now(), touch: event.pointerType === 'touch' };
   gesture = interaction;
   if (type === 'pan') stage.dataset.cursor = 'drag';
-  if (type === 'page' && (onPage || edge)) {
+  if (settings.motion && (onPage || edge)) {
     interaction.hold = setTimeout(() => {
       if (gesture !== interaction || interaction.moved || !settings.motion) return;
-      interaction.direction = edge || interaction.preferred;
+      const direction = edge || interaction.preferred;
+      if (!neighbors.has(direction)) return;
+      interaction.type = 'page';
+      interaction.direction = direction;
       interaction.held = true;
       stage.dataset.cursor = 'drag';
       if (interaction.turn) updateGrab(interaction);
       else grab(interaction, interaction.direction);
-    }, 165);
-    if (edge) {
+    }, type === 'pan' ? 240 : 165);
+    if (type === 'page' && edge) {
       stage.dataset.cursor = 'drag';
       grab(interaction, edge);
     }
@@ -732,7 +747,7 @@ stage.addEventListener('pointermove', event => {
     let interior = false;
     if (settings.motion && sheets && paperMode === 'adaptive') {
       const grip = pageGrip(position, sheets, true);
-      interior = grip.onPage && (zoom === 1 || grip.rim) &&
+      interior = grip.onPage && zoom === 1 &&
         (grip.direction ? neighbors.has(grip.direction) : neighbors.size > 0);
     }
     stage.dataset.cursor = settings.motion && (edge || interior) ? 'fold' : zoom > 1 ? 'pan' : '';
@@ -744,7 +759,15 @@ stage.addEventListener('pointermove', event => {
   if (gesture.type === 'pinch') {
     if (pointers.size < 2) return;
     const next = updatePinch();
-    if (gesture.distance > 0) setZoom(zoom * next.distance / gesture.distance, next.center);
+    if (gesture.distance > 0) {
+      const { center, distance } = gesture;
+      setZoom(zoom * next.distance / distance, center, false);
+      if (zoom > 1) {
+        pan.x += next.center.x - center.x;
+        pan.y += next.center.y - center.y;
+      }
+      reposition();
+    }
     gesture = { type: 'pinch', ...next };
     return;
   }
@@ -754,28 +777,43 @@ stage.addEventListener('pointermove', event => {
   gesture.moved ||= Math.hypot(dx, dy) > 6;
   gesture.last = position;
   if (gesture.type === 'pan') {
-    pan.x += position.x - last.x;
-    pan.y += position.y - last.y;
-    reposition();
-  } else {
-    const horizontal = Math.abs(dx) > 10 && (gesture.edge ||
-      ((gesture.onPage || gesture.touch) && Math.abs(dx) > Math.abs(dy) * .8));
-    const free = paperMode === 'adaptive';
-    const pulling = free && gesture.onPage && Math.hypot(dx, dy) > (gesture.rim ? 4 : 7);
-    if (horizontal || pulling) {
-      const swipe = physicalSide(dx < 0 ? 1 : -1);
-      const direction = gesture.edge || gesture.leafDirection ||
-        (horizontal && (!pulling || neighbors.has(swipe)) ? swipe : gesture.preferred);
-      if (direction !== gesture.direction && neighbors.has(direction) && !(free && gesture.direction)) {
-        if (gesture.turn) endTurn(gesture.turn, false);
-        gesture.turn = null;
-        gesture.direction = direction;
-      }
-      grab(gesture, gesture.direction);
+    if (!gesture.moved) return;
+    const { edge, panning } = gesture;
+    const inward = !panning && edge && settings.motion && dx * physicalSide(edge) < -Math.abs(dy) * 1.4;
+    if (!inward) {
+      const origin = panning ? last : start;
+      pan.x += position.x - origin.x;
+      pan.y += position.y - origin.y;
+      gesture.panning = true;
+      reposition();
+      return;
     }
-    updateGrab(gesture);
+    gesture.type = 'page';
   }
+  const horizontal = Math.abs(dx) > 10 && (gesture.edge ||
+    ((gesture.onPage || gesture.touch) && Math.abs(dx) > Math.abs(dy) * .8));
+  const free = paperMode === 'adaptive';
+  const pulling = free && gesture.onPage && Math.hypot(dx, dy) > (gesture.rim ? 4 : 7);
+  if (horizontal || pulling) {
+    const swipe = physicalSide(dx < 0 ? 1 : -1);
+    const direction = gesture.edge || gesture.leafDirection ||
+      (horizontal && (!pulling || neighbors.has(swipe)) ? swipe : gesture.preferred);
+    if (direction !== gesture.direction && neighbors.has(direction) && !(free && gesture.direction)) {
+      if (gesture.turn) endTurn(gesture.turn, false);
+      gesture.turn = null;
+      gesture.direction = direction;
+    }
+    grab(gesture, gesture.direction);
+  }
+  updateGrab(gesture);
 });
+
+function pullDistance(turn, start, fraction) {
+  if (zoom === 1) return turn.sheet.w * fraction;
+  const width = stage.clientWidth;
+  const room = turn.side > 0 ? start.x : width - start.x;
+  return Math.min(Math.min(turn.sheet.w, width) * fraction, Math.max(38, room * .72));
+}
 
 function release(event, canceled = false) {
   if (!pointers.delete(event.pointerId) || !gesture) return;
@@ -794,15 +832,15 @@ function release(event, canceled = false) {
     const distance = (previous.start.x - position.x) * turn.side;
     const reach = turn.grip ? (turn.side > 0 ? turn.grip.x : 1 - turn.grip.x) : 1;
     const inner = turn.mode === 'adaptive' ? 1 - smooth((reach - .13) / .23) : 0;
-    const quick = performance.now() - startTime < 295 && distance > Math.min(105, turn.sheet.w * (.23 - .085 * inner));
+    const quick = performance.now() - startTime < 295 && distance > Math.min(105, pullDistance(turn, previous.start, .23 - .085 * inner));
     const complete = !canceled && ((!held && !moved && edge) ||
-      (moved && (distance >= turn.sheet.w * (.34 - .15 * inner) || quick)));
+      (moved && (distance >= pullDistance(turn, previous.start, .34 - .15 * inner) || quick)));
     if (complete && moved) dismissPageTurnTip();
     settle(turn, complete, turn.mode === 'mesh' ? (complete ? 355 : 280) : (complete ? 300 : 235));
   } else if (!canceled && previous.type === 'page') {
     const dx = position.x - previous.start.x;
     const dy = position.y - previous.start.y;
-    const direction = previous.leafDirection || physicalSide(dx < 0 ? 1 : -1);
+    const direction = previous.edge || previous.leafDirection || physicalSide(dx < 0 ? 1 : -1);
     if ((previous.onPage || previous.edge || previous.touch) && dx * physicalSide(direction) < 0 &&
         Math.abs(dx) > 58 && Math.abs(dx) > Math.abs(dy) * 1.25) {
       navigate(direction);
@@ -825,7 +863,7 @@ stage.addEventListener('pointercancel', event => release(event, true));
 stage.addEventListener('lostpointercapture', event => release(event, true));
 stage.addEventListener('pointerleave', () => { if (!gesture) stage.dataset.cursor = ''; });
 stage.addEventListener('dblclick', event => {
-  if (event.target === stage && !hitEdge(point(event))) setZoom(zoom > 1 ? 1 : 1.9, point(event));
+  if (event.target === stage && (zoom > 1 || !hitEdge(point(event)))) setZoom(zoom > 1 ? 1 : 1.9, point(event));
 });
 stage.addEventListener('wheel', event => {
   if (!book || !event.deltaY) return;
@@ -907,6 +945,7 @@ function home() {
   closePopovers();
   setDrawer(false);
   if (document.body.classList.contains('fullscreen')) window.pliego.fullscreen();
+  const closedId = book.id;
   book = null;
   current = null;
   signature = undefined;
@@ -917,10 +956,13 @@ function home() {
   pageTurnTip.hidden = true;
   byId('navigation').hidden = true;
   byId('tools').hidden = true;
+  byId('home').hidden = true;
+  byId('brand').hidden = false;
   byId('title').textContent = '';
   byId('title').title = '';
-  library.render();
   byId('welcome').hidden = false;
+  library.render();
+  library.focusTitle(closedId);
 }
 
 function showChrome(hold = false) {
@@ -954,14 +996,13 @@ new ResizeObserver(() => {
   cancelAnimationFrame(resizeFrame);
   resizeFrame = requestAnimationFrame(() => {
     if (!book || !current || opening) return;
-    const nextDouble = doubleView();
     cancelTurn();
-    if (previousDouble !== nextDouble) showPage(pageIndex);
-    else reposition();
+    reposition();
   });
 }).observe(stage);
 
 const library = createLibrary({ byId, icon, openComic, notice });
+createDownloads(byId, library);
 const choose = () => book ? openComic(() => window.pliego.choose(library.category())) : library.importFiles();
 byId('home').addEventListener('click', home);
 byId('page-turn-tip-close').addEventListener('click', () => {
@@ -1017,7 +1058,10 @@ for (const [id, name] of [['layout-option', 'layout'], ['motion-option', 'motion
   byId(id).addEventListener('change', event => {
     settings[name] = name === 'layout' ? event.target.value : event.target.checked;
     window.pliego.settings(settings).catch(console.error);
-    if (name === 'layout') showPage(pageIndex);
+    if (name === 'layout') {
+      if (settings.layout === 'auto') automaticDouble = fitsDoubleView();
+      showPage(pageIndex);
+    }
     if (name === 'motion') pageTurnTip.hidden = pageTurnTipSeen || !settings.motion || !book || book.count < 2;
   });
 }
@@ -1032,7 +1076,7 @@ window.addEventListener('pointerdown', event => {
 });
 window.addEventListener('pointermove', event => {
   if (!document.body.classList.contains('fullscreen')) return;
-  if (gesture?.type === 'page' && (gesture.turn || gesture.rim)) return;
+  if (gesture && (gesture.type !== 'page' || gesture.turn || gesture.rim)) return;
   const distance = Math.min(event.clientY, innerHeight - event.clientY);
   const onRim = distance > 3 && distance < 18 && current && settings.motion && paperMode === 'adaptive' &&
     event.target === stage && pageGrip(point(event), positioned(current), true).rim;
@@ -1135,12 +1179,10 @@ const initial = await window.pliego.initial();
 Object.assign(settings, initial.settings);
 pageTurnTipSeen = initial.pageTurnTipSeen;
 syncOptions();
-library.update(initial.library);
-library.render();
+library.initialize(initial.library, initial.version, initial.libraryColumns);
 library.checkUpdates();
 window.pliego.onLibraryChanged(data => {
   library.update(data);
   if (!book && !document.querySelector('#library-dialog[open]')) library.render();
 });
-createDownloads(byId, library).catch(console.error);
 if (initial.file) openComic(() => window.pliego.open(initial.file));

@@ -2,7 +2,7 @@ import { packager } from '@electron/packager';
 import { flipFuses, FuseVersion, FuseV1Options } from '@electron/fuses';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { prepareVendor } from './vendor.mjs';
+import { components, download, prepareVendor } from './vendor.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 await prepareVendor();
@@ -12,6 +12,8 @@ const outputs = await packager({
   name: 'Pliego',
   platform: 'win32',
   arch: 'x64',
+  electronVersion: components.electron.version,
+  electronZipDir: path.dirname(await download(components.electron)),
   overwrite: true,
   asar: true,
   icon: path.join(root, 'assets', 'pliego.ico'),

@@ -1,5 +1,12 @@
 const categoryLabels = { manga: 'Mangas', comic: 'Cómics' };
+const coverSizes = [
+  ['auto', 'Automático'], ['9', 'Hasta 9 por fila'], ['6', 'Hasta 6 por fila'], ['4', 'Hasta 4 por fila']
+];
 const maxTitleLength = 255;
+
+function searchText(text) {
+  return text.normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('es');
+}
 
 function cardTitle(item) {
   return item.originalTitle === undefined
@@ -38,10 +45,20 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   const body = byId('library-dialog-body');
   const error = byId('library-dialog-error');
   const submit = byId('library-submit');
+  const cancel = byId('library-cancel');
   const toast = byId('library-toast');
   const toastActions = byId('library-toast-actions');
   const selectionCategory = byId('selection-category');
   const selectionRename = byId('selection-rename');
+  const add = byId('library-add');
+  const torrent = byId('torrent-open');
+  const coverView = byId('library-cover-view');
+  const options = byId('library-options');
+  const suggest = byId('library-suggest');
+  const search = byId('library-search');
+  const groupList = byId('group-list');
+  const groupBrowser = byId('group-browser');
+  const newGroup = byId('group-new');
   const tabs = [...welcome.querySelectorAll('[data-category]')];
   let store = { books: [], groups: [], recentIds: [] };
   let category = 'comic';
@@ -55,6 +72,8 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   let toastTimer;
   let importing = false;
   let suggesting = false;
+  let version;
+  let announcedUpdate;
   let submitting = false;
   let orderEditing = false;
   let selecting = false;
@@ -65,11 +84,20 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   let drag;
   let savingDrag = false;
   const selectedBooks = new Set();
+  const libraryArea = {
+    scroller: welcome, rectangle: selectionRectangle, cards: grid, selected: selectedBooks,
+    top: () => libraryTop.getBoundingClientRect().bottom,
+    paint: paintSelection,
+    onCommit: () => {
+      selecting ||= selectedBooks.size > 0;
+      selectionAnchor = undefined;
+    }
+  };
 
   function update(data, type = category) {
     if (!data) return;
     store = data;
-    if (!recent && type !== category) {
+    if (!recent && !search.value.trim() && type !== category) {
       category = type;
       selectedGroup = undefined;
       orderEditing = false;
@@ -92,46 +120,77 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     return groups().find(group => group.id === selectedGroup);
   }
 
+  function initialize(data, installedVersion, columns) {
+    update(data);
+    version = installedVersion;
+    welcome.dataset.coverColumns = columns;
+    const opened = new Set(store.recentIds);
+    recent = store.books.some(item => opened.has(item.id));
+    render();
+  }
+
+  function canSuggest() {
+    const count = store.books.filter(item => item.category === category).length;
+    return count >= (groups().length ? 1 : 2);
+  }
+
+  function paintAvailability() {
+    add.disabled = torrent.disabled = importing || suggesting;
+    suggest.disabled = importing || suggesting || !canSuggest();
+    suggest.setAttribute('aria-busy', suggesting);
+    const label = suggesting ? 'Buscando…' : 'Sugerir grupos';
+    if (suggest.lastElementChild.textContent !== label) suggest.lastElementChild.textContent = label;
+  }
+
   function render() {
     finishAreaSelection(false);
     hideOverlays();
     clearDrag();
     const categoryBooks = store.books.filter(item => item.category === category);
+    const query = searchText(search.value.trim());
+    const terms = query ? query.split(/\s+/u) : [];
     const index = new Map((recent ? store.books : categoryBooks).map(item => [item.id, item]));
     const group = recent ? undefined : selected();
     if (!group && !recent && selectedGroup) {
       selectedGroup = undefined;
       orderEditing = false;
     }
-    const visible = recent ? (store.recentIds || []).map(id => index.get(id)).filter(Boolean) :
+    const visible = query ? store.books.filter(item => {
+      const title = searchText(item.title + ' ' + (item.originalTitle ?? ''));
+      return terms.every(term => title.includes(term));
+    }) : recent ? (store.recentIds || []).map(id => index.get(id)).filter(Boolean) :
       group ? group.books.map(id => index.get(id)).filter(Boolean) : categoryBooks;
     visibleIds = visible.map(item => item.id);
     const visibleSet = new Set(visibleIds);
     for (const id of selectedBooks) if (!visibleSet.has(id)) selectedBooks.delete(id);
     for (const tab of tabs) tab.setAttribute('aria-pressed', tab.dataset.category === (recent ? 'recent' : category));
 
-    byId('group-list').hidden = recent;
-    byId('group-suggest').hidden = recent;
-    byId('library-order').hidden = recent;
+    byId('library-controls').hidden = !store.books.length && !store.groups.length;
+    byId('library-search-box').hidden = !store.books.length && !search.value;
+    byId('library-search-clear').hidden = !search.value;
+    groupList.hidden = Boolean(query) || recent || (!categoryBooks.length && !groups().length);
+    newGroup.hidden = groupList.hidden;
+    groupBrowser.hidden = recent || !store.groups.length;
+    byId('library-groups').hidden = groupList.hidden && groupBrowser.hidden;
+    suggest.hidden = groupList.hidden || !canSuggest();
+    byId('library-order').hidden = Boolean(query) || recent || (!visible.length && !orderEditing);
     byId('library-order').disabled = visible.length < 2 && !orderEditing;
     byId('library-order').setAttribute('aria-pressed', orderEditing);
     byId('library-order').title = orderEditing ? 'Terminar de ordenar' : 'Ordenar portadas';
     byId('library-order').setAttribute('aria-label', byId('library-order').title);
     const all = groupButton('Todos', undefined, !group);
-    const create = button('+ Nuevo grupo', 'button new-group');
-    create.addEventListener('click', () => pickGroupBooks(undefined, create));
-    byId('group-list').replaceChildren(all, ...groups().map(item =>
-      groupButton(item.name, item.id, item.id === group?.id)), create);
-    byId('group-edit').hidden = !group;
-    byId('group-edit').setAttribute('aria-pressed', orderEditing);
+    groupList.replaceChildren(all, ...groups().map(item =>
+      groupButton(item.name, item.id, item.id === group?.id)));
+    byId('group-edit').hidden = !group || Boolean(query);
     byId('order-bar').hidden = !orderEditing;
-    byId('group-suggest').disabled = suggesting || categoryBooks.length < (groups().length ? 1 : 2);
-    byId('library-add').disabled = importing || suggesting;
+    paintAvailability();
 
     const empty = byId('library-empty');
     empty.hidden = visible.length > 0;
-    empty.querySelector('p').textContent = recent ? 'Aquí aparecerán los títulos que abras.' : group ? 'Este grupo está vacío.' :
+    empty.querySelector('p').textContent = query ? 'No se encontraron títulos.' :
+      recent ? 'Aquí aparecerán los títulos que abras.' : group ? 'Este grupo está vacío.' :
       category === 'manga' ? 'Aún no hay mangas.' : 'Aún no hay cómics.';
+    byId('library-drop-hint').hidden = Boolean(query) || Boolean(group) || recent;
     observer?.disconnect();
     observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
@@ -140,7 +199,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
         observer.unobserve(entry.target);
       }
     }, { root: welcome, rootMargin: '100px' });
-    grid.replaceChildren(...visible.map((item, position) => card(item, group, position, visible.length)));
+    grid.replaceChildren(...visible.map((item, position) => card(item, group, position, visible.length, Boolean(query))));
     paintSelection();
   }
 
@@ -152,9 +211,8 @@ export function createLibrary({ byId, icon, openComic, notice }) {
 
   function paintSelection() {
     const count = selectedBooks.size;
-    byId('library-select').disabled = orderEditing || (!visibleIds.length && !selecting);
-    byId('library-select').setAttribute('aria-pressed', selecting);
-    byId('library-select').textContent = selecting ? 'Terminar selección' : 'Seleccionar';
+    byId('library-select').hidden = orderEditing || !visibleIds.length;
+    byId('library-actions').hidden = selecting;
     libraryTop.classList.toggle('is-selecting', selecting);
     byId('selection-bar').hidden = !selecting;
     byId('selection-count').textContent = count === 1 ? '1 título seleccionado' : count + ' títulos seleccionados';
@@ -169,6 +227,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     byId('selection-group').title = selectedTypes.size > 1 ? 'Selecciona títulos de la misma pestaña para agruparlos' : '';
     selectionRename.disabled = !count || savingDrag;
     byId('selection-trash').disabled = !count || savingDrag;
+    byId('selection-all').disabled = !visibleIds.length;
     byId('selection-all').textContent = count && count === visibleIds.length ? 'Deseleccionar todo' : 'Seleccionar todo';
     for (const tile of grid.children) {
       const selected = selectedBooks.has(tile.dataset.bookId);
@@ -195,15 +254,16 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     paintSelection();
   }
 
-  function beginAreaSelection(event) {
-    if (event.pointerType !== 'mouse' || event.button !== 0 || !visibleIds.length || orderEditing || savingDrag ||
-        event.target.closest('#library-top, .library-tile') || event.clientY < libraryTop.getBoundingClientRect().bottom) return;
-    const bounds = welcome.getBoundingClientRect();
-    if (event.clientX >= bounds.left + welcome.clientWidth || event.clientY >= bounds.top + welcome.clientHeight) return;
+  function beginAreaSelection(event, surface) {
+    if (areaSelection || event.pointerType !== 'mouse' || event.button !== 0) return;
+    const { scroller, selected, top } = surface;
+    const bounds = scroller.getBoundingClientRect();
+    if (event.clientY < top() || event.clientX >= bounds.left + scroller.clientWidth ||
+        event.clientY >= bounds.top + scroller.clientHeight) return;
     areaSelection = {
-      pointer: event.pointerId, startX: event.clientX, startY: event.clientY + welcome.scrollTop,
-      x: event.clientX, y: event.clientY, original: new Set(selectedBooks),
-      additive: event.ctrlKey || event.metaKey, started: false
+      ...surface, pointer: event.pointerId, startX: event.clientX, startY: event.clientY + scroller.scrollTop,
+      x: event.clientX, y: event.clientY, original: new Set(selected),
+      additive: surface.keepExisting || event.ctrlKey || event.metaKey, started: false
     };
   }
 
@@ -213,10 +273,10 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     area.x = event.clientX;
     area.y = event.clientY;
     if (!area.started) {
-      if (Math.hypot(area.x - area.startX, area.y + welcome.scrollTop - area.startY) < 5) return;
+      if (Math.hypot(area.x - area.startX, area.y + area.scroller.scrollTop - area.startY) < 5) return;
       area.started = true;
-      welcome.setPointerCapture(event.pointerId);
-      welcome.classList.add('is-selecting-area');
+      area.scroller.setPointerCapture(event.pointerId);
+      area.scroller.classList.add('is-selecting-area');
       hideOverlays();
       window.getSelection()?.removeAllRanges();
     }
@@ -232,39 +292,40 @@ export function createLibrary({ byId, icon, openComic, notice }) {
 
   function paintAreaSelection(autoScroll) {
     const area = areaSelection;
-    const viewport = welcome.getBoundingClientRect();
-    const top = Math.max(viewport.top, libraryTop.getBoundingClientRect().bottom);
-    const bottom = viewport.top + welcome.clientHeight;
+    const { scroller, selected, cards, rectangle } = area;
+    const viewport = scroller.getBoundingClientRect();
+    const top = Math.max(viewport.top, area.top());
+    const bottom = viewport.top + scroller.clientHeight;
     if (top >= bottom) return;
     if (autoScroll) {
       const edge = 28;
       const speed = area.y > bottom - edge ? Math.min(24, (area.y - bottom + edge) / 2) :
         area.y < top + edge ? -Math.min(24, (top + edge - area.y) / 2) : 0;
-      const previous = welcome.scrollTop;
-      if (speed) welcome.scrollTop += speed;
-      if (welcome.scrollTop !== previous) scheduleAreaSelection();
+      const previous = scroller.scrollTop;
+      if (speed) scroller.scrollTop += speed;
+      if (scroller.scrollTop !== previous) scheduleAreaSelection();
     }
-    const x = Math.max(viewport.left, Math.min(area.x, viewport.left + welcome.clientWidth));
+    const x = Math.max(viewport.left, Math.min(area.x, viewport.left + scroller.clientWidth));
     const y = Math.max(top, Math.min(area.y, bottom));
-    const startY = area.startY - welcome.scrollTop;
+    const startY = area.startY - scroller.scrollTop;
     const rect = { left: Math.min(area.startX, x), right: Math.max(area.startX, x),
       top: Math.min(startY, y), bottom: Math.max(startY, y) };
     const shownTop = Math.max(top, rect.top);
     const next = area.additive ? new Set(area.original) : new Set();
-    for (const tile of grid.children) {
+    for (const tile of cards.children) {
       const bounds = tile.getBoundingClientRect();
       if (rect.left < bounds.right && rect.right > bounds.left &&
           rect.top < bounds.bottom && rect.bottom > bounds.top) next.add(tile.dataset.bookId);
     }
-    Object.assign(selectionRectangle.style, {
+    Object.assign(rectangle.style, {
       left: rect.left + 'px', top: shownTop + 'px', width: Math.max(1, rect.right - rect.left) + 'px',
       height: Math.max(1, Math.min(bottom, rect.bottom) - shownTop) + 'px'
     });
-    selectionRectangle.hidden = false;
-    if (next.size === selectedBooks.size && [...next].every(id => selectedBooks.has(id))) return;
-    selectedBooks.clear();
-    for (const id of next) selectedBooks.add(id);
-    paintSelection();
+    rectangle.hidden = false;
+    if (next.size === selected.size && [...next].every(id => selected.has(id))) return;
+    selected.clear();
+    for (const id of next) selected.add(id);
+    area.paint();
   }
 
   function finishAreaSelection(commit) {
@@ -275,36 +336,42 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     if (areaFrame) cancelAnimationFrame(areaFrame);
     areaFrame = 0;
     if (!area.started) return;
-    if (welcome.hasPointerCapture(area.pointer)) welcome.releasePointerCapture(area.pointer);
-    welcome.classList.remove('is-selecting-area');
-    selectionRectangle.hidden = true;
-    if (commit) {
-      selecting ||= selectedBooks.size > 0;
-      selectionAnchor = undefined;
-    } else {
-      selectedBooks.clear();
-      for (const id of area.original) selectedBooks.add(id);
+    const { scroller, rectangle, selected } = area;
+    if (scroller.hasPointerCapture(area.pointer)) scroller.releasePointerCapture(area.pointer);
+    scroller.classList.remove('is-selecting-area');
+    rectangle.hidden = true;
+    if (commit) area.onCommit?.();
+    else {
+      selected.clear();
+      for (const id of area.original) selected.add(id);
     }
-    paintSelection();
+    area.paint();
+  }
+
+  function openGroup(id, type = category) {
+    search.value = '';
+    recent = false;
+    update(store, type);
+    selectedGroup = id;
+    orderEditing = false;
+    clearSelection();
+    welcome.scrollTop = 0;
+    render();
+    const current = groupList.querySelector('[aria-pressed="true"]');
+    current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return current;
   }
 
   function groupButton(name, id, active) {
     const control = button(name, 'button group-chip');
     control.setAttribute('aria-pressed', active);
     control.title = name;
-    control.addEventListener('click', () => {
-      selectedGroup = id;
-      orderEditing = false;
-      clearSelection();
-      render();
-      const current = byId('group-list').querySelector('[aria-pressed="true"]');
-      current?.focus({ preventScroll: true });
-    });
+    control.addEventListener('click', () => openGroup(id)?.focus({ preventScroll: true }));
     if (id) bindGroupDrop(control, id);
     return control;
   }
 
-  function card(item, group, position, total) {
+  function card(item, group, position, total, inSearch) {
     const tile = element('article', 'library-tile');
     tile.dataset.bookId = item.id;
     const open = button('', 'recent');
@@ -323,6 +390,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     const status = item.status === 'read' ? 'Leído' :
       item.status === 'unread' ? 'Sin leer' : 'Página ' + (item.page + 1) + ' de ' + item.count;
     details.append(element('span', 'recent-title', title), element('span', 'recent-page', status));
+    if (inSearch) details.append(element('span', 'recent-category', categoryLabels[item.category]));
     if (item.status === 'reading') {
       const meter = element('span', 'recent-meter');
       meter.style.setProperty('--progress', ((item.page + 1) / item.count * 100) + '%');
@@ -442,6 +510,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
 
   function closeMenu(focus = false) {
     menu.hidden = true;
+    if (menuAnchor?.hasAttribute('aria-expanded')) menuAnchor.setAttribute('aria-expanded', false);
     if (focus && menuAnchor?.isConnected) menuAnchor.focus({ preventScroll: true });
     menuAnchor = undefined;
   }
@@ -453,10 +522,13 @@ export function createLibrary({ byId, icon, openComic, notice }) {
 
   function showMenu(actions, x, y, anchor) {
     hidePreview();
+    closeMenu();
     menuAnchor = anchor;
-    menu.replaceChildren(...actions.map(([label, run, separated]) => {
+    if (anchor.hasAttribute('aria-expanded')) anchor.setAttribute('aria-expanded', true);
+    menu.replaceChildren(...actions.map(([label, run, separated, checked]) => {
       const item = button(label, separated ? 'separated' : '');
-      item.setAttribute('role', 'menuitem');
+      item.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemradio');
+      if (checked !== undefined) item.setAttribute('aria-checked', checked);
       item.addEventListener('click', () => {
         closeMenu(true);
         run();
@@ -466,7 +538,16 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     menu.hidden = false;
     menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
     menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + 'px';
-    menu.firstElementChild.focus({ preventScroll: true });
+    (menu.querySelector('[aria-checked="true"]') || menu.firstElementChild).focus({ preventScroll: true });
+  }
+
+  function toggleMenu(anchor, actions) {
+    if (menuAnchor === anchor) {
+      closeMenu(true);
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    showMenu(actions, rect.left, rect.bottom + 5, anchor);
   }
 
   function moveCategory(ids, category) {
@@ -532,9 +613,93 @@ export function createLibrary({ byId, icon, openComic, notice }) {
 
   async function checkUpdates() {
     const update = await api.checkUpdates().catch(() => null);
-    if (!update) return;
-    byId('update-message').textContent = 'Pliego ' + update.version + (update.prerelease ? ' beta' : '') + ' disponible';
+    if (update) announceUpdate(update);
+  }
+
+  function updateText(update) {
+    return 'Pliego ' + update.version + (update.prerelease ? ' beta' : '') + ' disponible';
+  }
+
+  function announceUpdate(update) {
+    if (announcedUpdate === update.version) return;
+    announcedUpdate = update.version;
+    byId('update-message').textContent = updateText(update);
     byId('update-banner').hidden = false;
+  }
+
+  async function openRelease(open, control) {
+    control.disabled = true;
+    const opened = await open().catch(() => false);
+    control.disabled = false;
+    return opened;
+  }
+
+  function showUpdateCheck() {
+    const content = element('div', 'info-content');
+    const status = element('p');
+    status.setAttribute('role', 'status');
+    const control = button('', 'button secondary');
+    content.append(status, control);
+    showDialog('Buscar actualizaciones', content, '', undefined, options);
+
+    async function check() {
+      if (document.activeElement === control) cancel.focus();
+      control.hidden = true;
+      status.textContent = 'Buscando actualizaciones…';
+      const result = await api.refreshUpdates().catch(() => null);
+      if (result?.status === 'available') {
+        announceUpdate(result.update);
+        status.textContent = updateText(result.update) + '.';
+        control.textContent = 'Descargar actualización';
+        control.onclick = async () => {
+          if (!await openRelease(api.openUpdate, control)) {
+            status.textContent = 'No se pudo abrir la descarga en GitHub.';
+          }
+        };
+      } else if (result?.status === 'current') {
+        byId('update-banner').hidden = true;
+        announcedUpdate = undefined;
+        status.textContent = 'Pliego ' + version + ' está al día.';
+        return;
+      } else {
+        status.textContent = 'No se pudo comprobar si hay actualizaciones. Inténtalo de nuevo.';
+        control.textContent = 'Reintentar';
+        control.onclick = check;
+      }
+      control.hidden = false;
+    }
+    check();
+  }
+
+  function showHelp() {
+    const shortcuts = element('dl', 'shortcut-list');
+    for (const [title, keys] of [
+      ['Añadir archivos', 'Ctrl + O'], ['Buscar títulos', 'Ctrl + F'],
+      ['Renombrar en la biblioteca', 'F2'], ['Seleccionar varios títulos', 'Ctrl + clic / Mayús + clic'],
+      ['Pasar página', 'Flechas / Espacio'], ['Ver miniaturas', 'T'],
+      ['Ir a una página', 'G'], ['Pantalla completa', 'F11']
+    ]) {
+      shortcuts.append(element('dt', '', title), element('dd', '', keys));
+    }
+    const content = element('div', 'info-content');
+    content.append(
+      element('p', '', 'Arrastra una página para girarla. En la biblioteca, arrastra desde un espacio vacío para seleccionar portadas.'),
+      element('p', '', 'Con zoom, arrastra para moverte por la página. Para girarla, mantén pulsado un instante sobre el papel y luego arrastra.'),
+      shortcuts
+    );
+    showDialog('Ayuda y atajos', content, '', undefined, options);
+  }
+
+  function showAbout() {
+    const content = element('div', 'info-content');
+    const notes = button('Ver novedades en GitHub', 'button secondary');
+    const status = element('p');
+    status.setAttribute('role', 'status');
+    notes.addEventListener('click', async () => {
+      status.textContent = await openRelease(api.openReleaseNotes, notes) ? '' : 'No se pudieron abrir las novedades en GitHub.';
+    });
+    content.append(element('p', '', 'Versión instalada ' + version), notes, status);
+    showDialog('Acerca de Pliego', content, '', undefined, options);
   }
 
   function scheduleMessageHide(delay) {
@@ -589,17 +754,22 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   }
 
   function showDialog(title, content, label, run, anchor) {
+    finishAreaSelection(false);
     hideOverlays();
     returnFocus = anchor;
-    dialog.classList.remove('with-cover-picker', 'with-book-rename');
+    suggest.setAttribute('aria-expanded', anchor === suggest);
+    dialog.classList.remove('with-cover-picker', 'with-book-rename', 'with-group-browser');
     byId('library-dialog-title').textContent = title;
     body.replaceChildren(content);
     submit.textContent = label;
+    submit.hidden = !run;
+    cancel.textContent = run ? 'Cancelar' : 'Cerrar';
     error.hidden = true;
     submit.disabled = false;
     dialogAction = run;
     if (!dialog.open) dialog.showModal();
-    body.querySelector('input:not([type="checkbox"]), input[type="checkbox"]')?.focus();
+    const firstInput = body.querySelector('input:not([type="checkbox"]), input[type="checkbox"]');
+    if (firstInput || !run) (firstInput || cancel).focus();
   }
 
   function closeDialog() {
@@ -607,6 +777,8 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   }
 
   dialog.addEventListener('close', () => {
+    if (areaSelection?.scroller === body) finishAreaSelection(false);
+    suggest.setAttribute('aria-expanded', false);
     if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     dialogAction = undefined;
   });
@@ -813,6 +985,49 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     input.select();
   }
 
+  function browseGroups() {
+    const content = element('div', 'group-browser');
+    const filter = textInput('', 'Buscar grupos');
+    filter.placeholder = 'Buscar grupos…';
+    const list = element('div', 'group-browser-list');
+    const empty = element('p', 'picker-empty', 'No se encontraron grupos.');
+    empty.setAttribute('role', 'status');
+    content.append(filter, list, empty);
+    const ordered = [...store.groups].sort((left, right) =>
+      left.name.localeCompare(right.name, 'es', { sensitivity: 'base', numeric: true }));
+
+    function paint() {
+      const query = searchText(filter.value.trim());
+      const sections = [];
+      for (const type of ['comic', 'manga']) {
+        const matches = ordered.filter(group => group.category === type && searchText(group.name).includes(query));
+        if (!matches.length) continue;
+        const section = element('section');
+        section.setAttribute('aria-label', categoryLabels[type]);
+        section.append(element('h3', '', categoryLabels[type]));
+        for (const group of matches) {
+          const control = button(group.name, 'button group-browser-item');
+          if (!recent && group.id === selectedGroup) control.setAttribute('aria-current', 'true');
+          control.addEventListener('click', () => {
+            returnFocus = openGroup(group.id, group.category) || groupBrowser;
+            dialog.close();
+          });
+          section.append(control);
+        }
+        sections.push(section);
+      }
+      list.replaceChildren(...sections);
+      list.scrollTop = 0;
+      list.hidden = sections.length === 0;
+      empty.hidden = !list.hidden;
+    }
+
+    filter.addEventListener('input', paint);
+    paint();
+    showDialog('Grupos', content, '', undefined, groupBrowser);
+    dialog.classList.add('with-group-browser');
+  }
+
   function pickGroupBooks(group, anchor) {
     const type = group?.category ?? category;
     const titles = store.books.filter(item => item.category === type);
@@ -824,22 +1039,38 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     search.placeholder = 'Buscar por título…';
     const summary = element('p', 'picker-count');
     summary.setAttribute('role', 'status');
+    const tools = element('div', 'picker-tools');
+    const hint = element('p', 'picker-hint', 'Arrastra desde un espacio vacío para seleccionar varias portadas.');
+    tools.append(summary, hint);
     const covers = element('div', 'picker-grid');
     const empty = element('p', 'picker-empty');
     if (!group) content.append(name);
     if (titles.length > 5) content.append(search);
-    content.append(summary, covers, empty);
+    content.append(tools, covers, empty);
     const known = new Set(titles.map(item => item.id));
     function paintCount() {
       const count = [...checked].filter(id => known.has(id)).length;
       summary.textContent = count === 1 ? '1 título seleccionado' : count + ' títulos seleccionados';
     }
-    const normalized = text => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    const pickerArea = {
+      scroller: body, rectangle: byId('picker-selection-rectangle'), cards: covers, selected: checked,
+      top: () => Math.max(covers.getBoundingClientRect().top, tools.getBoundingClientRect().bottom),
+      keepExisting: true,
+      paint: () => {
+        for (const tile of covers.children) tile.querySelector('input').checked = checked.has(tile.dataset.bookId);
+        paintCount();
+      }
+    };
+    covers.addEventListener('pointerdown', event => {
+      if (!submitting && covers.children.length && !event.target.closest('.picker-card')) beginAreaSelection(event, pickerArea);
+    });
     function paint() {
-      const query = normalized(search.value.trim()).split(/\s+/u).filter(Boolean);
-      const matching = titles.filter(item => query.every(word => normalized(item.title).includes(word)));
+      if (areaSelection?.cards === covers) finishAreaSelection(false);
+      const query = searchText(search.value.trim()).split(/\s+/u).filter(Boolean);
+      const matching = titles.filter(item => query.every(word => searchText(item.title).includes(word)));
       covers.replaceChildren(...matching.map(item => {
         const label = element('label', 'picker-card');
+        label.dataset.bookId = item.id;
         const cover = element('span', 'recent-cover');
         const pic = element('img');
         pic.src = '/cover/' + item.id + '/0';
@@ -863,6 +1094,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
         return label;
       }));
       empty.hidden = matching.length > 0;
+      hint.hidden = matching.length < 2;
       empty.textContent = titles.length ? 'No hay títulos que coincidan.' : 'Añade archivos a esta pestaña para incluirlos en un grupo.';
       paintCount();
     }
@@ -872,10 +1104,8 @@ export function createLibrary({ byId, icon, openComic, notice }) {
       const previous = new Set(store.groups.map(item => item.id));
       await edit('group-save', { groupId: group?.id, category: type, name: group ? undefined : name.value, books: [...checked] });
       if (!group) {
-        selectedGroup = groups().find(item => !previous.has(item.id))?.id;
-        orderEditing = false;
-        clearSelection();
-        render();
+        const created = store.groups.find(item => item.category === type && !previous.has(item.id));
+        if (created) returnFocus = openGroup(created.id, type) || anchor;
       }
     }, anchor);
     dialog.classList.add('with-cover-picker');
@@ -1020,32 +1250,29 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     ], rect.left, rect.bottom + 4, anchor);
   });
 
-  byId('group-suggest').addEventListener('click', async event => {
-    if (suggesting) return;
-    const anchor = event.currentTarget;
+  async function suggestGroups() {
+    if (suggesting || importing) return;
     const type = category;
+    hideOverlays();
     suggesting = true;
-    anchor.disabled = true;
-    byId('library-add').disabled = true;
-    anchor.textContent = 'Buscando…';
+    paintAvailability();
     try {
       const result = await api.suggestGroups(type);
       if (!result) throw Error();
       update(result.library);
-      if (category !== type || welcome.hidden || dialog.open) return;
+      if (recent || category !== type || search.value.trim() || welcome.hidden || dialog.open) return;
       render();
       const { suggestions } = result;
-      if (suggestions?.length) reviewSuggestions(type, suggestions, byId('group-suggest'));
+      if (suggestions?.length) reviewSuggestions(type, suggestions, suggest);
       else message('No hay nuevas coincidencias entre los títulos.');
     } catch {
       message('No se pudieron buscar grupos.');
     } finally {
       suggesting = false;
-      anchor.textContent = 'Sugerir grupos';
-      anchor.disabled = store.books.filter(item => item.category === category).length < (groups().length ? 1 : 2);
-      byId('library-add').disabled = importing;
+      paintAvailability();
+      if (!suggest.disabled && document.activeElement === document.body) suggest.focus({ preventScroll: true });
     }
-  });
+  }
 
   function reviewSuggestions(type, suggestions, anchor) {
     const list = element('div', 'suggestion-list');
@@ -1084,8 +1311,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   async function importFiles(files) {
     if (importing || suggesting || document.querySelector('dialog[open]')) return;
     importing = true;
-    byId('library-add').disabled = true;
-    byId('group-suggest').disabled = true;
+    paintAvailability();
     const type = currentCategory();
     try {
       if (files) notice('Añadiendo archivos…', true);
@@ -1105,8 +1331,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
       message('No se pudieron añadir los archivos.');
     } finally {
       importing = false;
-      byId('library-add').disabled = false;
-      byId('group-suggest').disabled = store.books.filter(item => item.category === category).length < (groups().length ? 1 : 2);
+      paintAvailability();
       notice('');
     }
   }
@@ -1116,6 +1341,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   }
 
   function showCategory(type, fromShortcut = true) {
+    search.value = '';
     recent = type === 'recent';
     if (!recent) update(store, type);
     if (fromShortcut) selectedGroup = undefined;
@@ -1126,31 +1352,70 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     if (fromShortcut) tabs.find(tab => tab.dataset.category === type)?.focus({ preventScroll: true });
   }
 
+  function focusTitle(id) {
+    const tile = [...grid.children].find(item => item.dataset.bookId === id);
+    const control = tile?.querySelector('.recent') || tabs.find(tab => tab.getAttribute('aria-pressed') === 'true');
+    control?.focus();
+  }
+
+  function updateSearch() {
+    orderEditing = false;
+    welcome.scrollTop = 0;
+    render();
+  }
+
+  function clearSearch() {
+    search.value = '';
+    updateSearch();
+    search.focus({ preventScroll: true });
+  }
+
+  search.addEventListener('input', updateSearch);
+  byId('library-search-clear').addEventListener('click', clearSearch);
   for (const tab of tabs) {
     const type = tab.dataset.category;
     if (type !== 'recent') bindCategoryDrop(tab, type);
     tab.addEventListener('click', () => showCategory(type, false));
   }
-  byId('library-add').addEventListener('click', () => importFiles());
+  add.addEventListener('click', () => importFiles());
+  groupBrowser.addEventListener('click', browseGroups);
+  newGroup.addEventListener('click', () => pickGroupBooks(undefined, newGroup));
+  coverView.addEventListener('click', () => {
+    const selected = welcome.dataset.coverColumns;
+    toggleMenu(coverView, coverSizes.map(([columns, title]) => [title, async () => {
+      if (columns === selected) return;
+      welcome.dataset.coverColumns = columns;
+      const saved = await api.setLibraryColumns(columns).catch(() => false);
+      if (!saved) message('No se pudo guardar el tamaño de las portadas.');
+    }, false, columns === selected]));
+  });
+  options.addEventListener('click', () => toggleMenu(options, [
+    ['Buscar actualizaciones', showUpdateCheck],
+    ['Ayuda y atajos', showHelp],
+    ['Acerca de Pliego', showAbout]
+  ]));
+  suggest.addEventListener('click', suggestGroups);
   byId('update-download').addEventListener('click', async event => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    const opened = await api.openUpdate().catch(() => false);
-    button.disabled = false;
-    if (!opened) message('No se pudo abrir la descarga en GitHub.');
+    if (!await openRelease(api.openUpdate, event.currentTarget)) message('No se pudo abrir la descarga en GitHub.');
   });
   byId('update-dismiss').addEventListener('click', () => {
     byId('update-banner').hidden = true;
-    byId('library-add').focus({ preventScroll: true });
+    options.focus({ preventScroll: true });
   });
   byId('library-select').addEventListener('click', () => {
-    if (selecting) clearSelection();
-    else {
-      selecting = true;
-      hideOverlays();
-    }
+    selecting = true;
+    hideOverlays();
     paintSelection();
+    byId('selection-all').focus({ preventScroll: true });
   });
+  function finishSelection() {
+    clearSelection();
+    paintSelection();
+    const select = byId('library-select');
+    const control = select.hidden ? search : select;
+    control.focus({ preventScroll: true });
+  }
+  byId('selection-done').addEventListener('click', finishSelection);
   byId('selection-all').addEventListener('click', () => {
     if (selectedBooks.size === visibleIds.length) selectedBooks.clear();
     else visibleIds.forEach(id => selectedBooks.add(id));
@@ -1196,7 +1461,11 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     render();
   });
 
-  welcome.addEventListener('pointerdown', beginAreaSelection);
+  welcome.addEventListener('pointerdown', event => {
+    if (visibleIds.length && !orderEditing && !savingDrag && !event.target.closest('#library-top, .library-tile')) {
+      beginAreaSelection(event, libraryArea);
+    }
+  });
   window.addEventListener('pointermove', moveAreaSelection);
   window.addEventListener('pointerup', event => {
     if (areaSelection?.pointer !== event.pointerId) return;
@@ -1207,12 +1476,13 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   window.addEventListener('pointercancel', event => {
     if (areaSelection?.pointer === event.pointerId) finishAreaSelection(false);
   });
-  welcome.addEventListener('lostpointercapture', event => {
+  window.addEventListener('lostpointercapture', event => {
     if (areaSelection?.pointer === event.pointerId) finishAreaSelection(false);
   });
   window.addEventListener('resize', () => { hideOverlays(); finishAreaSelection(false); });
   window.addEventListener('blur', () => { hideOverlays(); clearDrag(); finishAreaSelection(false); });
   welcome.addEventListener('scroll', () => { hideOverlays(); scheduleAreaSelection(); });
+  body.addEventListener('scroll', scheduleAreaSelection);
   welcome.addEventListener('dragover', event => {
     if (!drag?.ordering) return;
     const bounds = welcome.getBoundingClientRect();
@@ -1220,18 +1490,33 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     if (event.clientY < bounds.top + edge) welcome.scrollTop -= 16;
     else if (event.clientY > bounds.bottom - edge) welcome.scrollTop += 16;
   });
-  window.addEventListener('pointerdown', event => { if (!menu.contains(event.target)) closeMenu(); });
+  window.addEventListener('pointerdown', event => {
+    if (!menu.contains(event.target) && !menuAnchor?.contains(event.target)) closeMenu();
+  });
   window.addEventListener('keydown', event => {
-    if (event.key !== 'Escape' || dialog.open || welcome.hidden) return;
-    if (areaSelection) {
+    if (event.key === 'Escape' && areaSelection) {
       finishAreaSelection(false);
       event.preventDefault();
       return;
     }
+    if (welcome.hidden || document.querySelector('dialog[open]')) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && !byId('library-search-box').hidden &&
+        !byId('library-controls').hidden) {
+      event.preventDefault();
+      closeMenu();
+      search.focus();
+      search.select();
+      return;
+    }
+    if (event.key !== 'Escape') return;
+    if (event.target === search && search.value) {
+      event.preventDefault();
+      clearSearch();
+      return;
+    }
     if (menu.hidden && preview.hidden) {
       if (selecting) {
-        clearSelection();
-        paintSelection();
+        finishSelection();
       } else if (orderEditing) {
         orderEditing = false;
         render();
@@ -1242,6 +1527,6 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     hidePreview();
   });
 
-  return { update, progress, render, hideOverlays, importFiles, showCategory, clearMessage, checkUpdates,
+  return { initialize, update, progress, render, focusTitle, hideOverlays, importFiles, showCategory, clearMessage, checkUpdates,
     category: currentCategory };
 }

@@ -4,7 +4,7 @@ const path = require('node:path');
 const { openArchive } = require('./archive.cjs');
 const { createTransfers } = require('./torrent.cjs');
 const { createUpdateCheck } = require('./updates.cjs');
-const { addBook, applySuggestions, bookTitle, categories, findGroup, libraryView, loadLibrary, renameBooks,
+const { addBook, applySuggestions, bookTitle, categories, coverColumnOptions, findGroup, libraryView, loadLibrary, renameBooks,
   reorder, suggestGroups, updateGroup } = require('./library.cjs');
 
 const appOrigin = 'pliego://lector';
@@ -88,7 +88,7 @@ async function loadPreview(kind, id, index) {
     try {
       const page = await (temporary || current).read(index);
       if (!page) return null;
-      const result = thumbnail(page, kind === 'cover' ? 390 : 620);
+      const result = thumbnail(page, kind === 'cover' ? 660 : 620);
       if (result.data.length < 2 * 1024 * 1024) {
         previews.set(key, result);
         if (previews.size > 24) previews.delete(previews.keys().next().value);
@@ -169,8 +169,10 @@ async function start() {
 
   const updates = createUpdateCheck(app.getVersion(), (...args) => net.fetch(...args));
   handle('updates:check', () => updates.check());
-  handle('updates:open', async () => {
-    const url = updates.releasePage();
+  handle('updates:refresh', () => updates.refresh());
+  handle('updates:open', () => openRelease(updates.releasePage()));
+  handle('updates:notes', () => openRelease(updates.notesPage()));
+  async function openRelease(url) {
     if (!url) return false;
     try {
       await shell.openExternal(url);
@@ -178,7 +180,7 @@ async function start() {
     } catch {
       return false;
     }
-  });
+  }
 
   async function open(file, category) {
     const request = ++openRequest;
@@ -365,8 +367,8 @@ async function start() {
   handle('reader:initial', () => {
     const file = startupFile;
     startupFile = undefined;
-    return { settings: state.settings, pageTurnTipSeen: state.pageTurnTipSeen,
-      library: libraryView(state), file, fullscreen: window.isFullScreen() };
+    return { settings: state.settings, pageTurnTipSeen: state.pageTurnTipSeen, version: app.getVersion(),
+      library: libraryView(state), libraryColumns: state.libraryColumns, file, fullscreen: window.isFullScreen() };
   });
   handle('reader:choose', async category => {
     const result = await dialog.showOpenDialog(window, {
@@ -408,6 +410,12 @@ async function start() {
     return result.canceled ? null : importBooks(result.filePaths, category);
   });
   handle('library:import', (paths, category) => Array.isArray(paths) ? importBooks(paths, category) : null);
+  handle('library:columns', async columns => {
+    if (!coverColumnOptions.has(columns)) return false;
+    state.libraryColumns = columns;
+    await save();
+    return true;
+  });
   handle('library:edit', editLibrary);
   handle('library:suggest', async category => {
     for (const item of state.books) {
