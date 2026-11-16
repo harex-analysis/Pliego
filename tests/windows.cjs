@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { spawn, execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { once } = require('node:events');
 const { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
@@ -10,7 +11,7 @@ const { test } = require('node:test');
 const { _electron: electron, chromium } = require('playwright-core');
 const { openArchive } = require('../src/archive.cjs');
 const { magnetLink } = require('../src/torrent.cjs');
-const { createUpdateCheck } = require('../src/updates.cjs');
+const { createUpdateCheck, createUpdateDownload, isInstalledForUpdates } = require('../src/updates.cjs');
 
 const root = path.resolve(__dirname, '..');
 const launchSource = options => electron.launch({
@@ -91,6 +92,7 @@ test('reconoce ZIP por su contenido y descarta otros formatos', async () => {
 });
 
 const updateRepository = 'https://github.com/harex-analysis/Pliego/releases';
+const updatePayload = Buffer.from('Archivo de prueba del actualizador.');
 
 function release(version, prerelease = false) {
   return {
@@ -98,6 +100,22 @@ function release(version, prerelease = false) {
     assets: [{ name: 'Pliego-Setup-x64.exe', state: 'uploaded',
       browser_download_url: updateRepository + '/download/v' + version + '/Pliego-Setup-x64.exe' }]
   };
+}
+
+function verifiedRelease(version) {
+  const result = { ...release(version, true), immutable: true };
+  Object.assign(result.assets[0], {
+    size: updatePayload.length, digest: 'sha256:' + createHash('sha256').update(updatePayload).digest('hex')
+  });
+  return result;
+}
+
+async function waitUpdate(download, phase) {
+  for (let i = 0; i < 150; i++) {
+    if (download.state().phase === phase) return;
+    await delay(20);
+  }
+  assert.equal(download.state().phase, phase);
 }
 
 test('consulta una vez y elige la versión superior con un instalador oficial', async () => {
@@ -138,6 +156,94 @@ test('la búsqueda de actualizaciones tolera una respuesta vacía, límites y fa
   }
 });
 
+test('el instalador habilita actualizaciones en su propia ubicación', async () => {
+  const work = await mkdtemp(path.join(tmpdir(), 'pliego-marca-'));
+  try {
+    const executable = path.join(work, 'Pliego.exe');
+    const marker = path.join(work, '.pliego-installed');
+    assert.equal(await isInstalledForUpdates(executable, true), false);
+    await writeFile(marker, 'C:\\Otro Pliego\\Pliego.exe', 'utf16le');
+    assert.equal(await isInstalledForUpdates(executable, true), false);
+    await writeFile(marker, '\uFEFF' + executable, 'utf16le');
+    assert.equal(await isInstalledForUpdates(executable, true), true);
+    assert.equal(await isInstalledForUpdates(executable, false), false);
+  } finally { await cleanTestDirectory(work); }
+});
+
+test('la descarga interna requiere un instalador inmutable con tamaño y SHA-256', async () => {
+  const published = verifiedRelease('1.12.0');
+  const fetch = async () => Response.json([published]);
+  const portable = createUpdateCheck('1.11.1', fetch);
+  assert.deepEqual(await portable.check(), { version: '1.12.0', prerelease: true });
+  assert.equal(portable.installer(), undefined);
+  const compatible = createUpdateCheck('1.11.1', fetch, true);
+  assert.equal((await compatible.check()).canDownload, true);
+  assert.equal(compatible.installer().size, updatePayload.length);
+  published.immutable = false;
+  assert.equal((await createUpdateCheck('1.11.1', fetch, true).check()).canDownload, undefined);
+  published.immutable = true;
+  published.assets[0].digest = 'sha256:truncado';
+  assert.equal((await createUpdateCheck('1.11.1', fetch, true).check()).canDownload, undefined);
+});
+
+test('la descarga valida el origen y los bytes, limpia errores y vuelve a verificar al instalar', async () => {
+  const work = await mkdtemp(path.join(tmpdir(), 'pliego-descarga-update-'));
+  const check = createUpdateCheck('1.11.1', async () => Response.json([verifiedRelease('1.12.0')]), true);
+  await check.check();
+  const artifact = check.installer();
+  const downloads = [];
+  try {
+    for (const response of [() => Response.redirect('https://example.org/archivo.exe'),
+      () => new Response(updatePayload.subarray(0, 8)), () => new Response(Buffer.alloc(updatePayload.length, 1)),
+      () => new Response(Buffer.concat([updatePayload, Buffer.from('x')]))]) {
+      const download = createUpdateDownload(work, async url => { assert.equal(url, artifact.url); return response(); }, () => {});
+      downloads.push(download);
+      assert.equal(download.start(artifact), true);
+      await waitUpdate(download, 'error');
+      assert.deepEqual(await readdir(work), []);
+      assert.equal(await download.install(async () => assert.fail('Abrió un archivo rechazado')), false);
+    }
+    const endless = createUpdateDownload(work, async () => new Response(new ReadableStream({
+      start(stream) { stream.enqueue(Uint8Array.of(updatePayload[0])); }
+    })), () => {});
+    downloads.push(endless);
+    endless.start(artifact);
+    await delay(45);
+    await endless.cancel();
+    assert.equal(endless.state().phase, 'idle');
+    assert.deepEqual(await readdir(work), []);
+
+    const cdn = 'https://release-assets.githubusercontent.com/instalador';
+    const found = [];
+    const download = createUpdateDownload(work, async (url, options) => {
+      assert.equal(options.redirect, 'manual');
+      assert.equal(options.credentials, 'omit');
+      found.push(url);
+      return url === artifact.url ? Response.redirect(cdn) : new Response(updatePayload);
+    }, () => {});
+    downloads.push(download);
+    assert.equal(download.start(artifact), true);
+    assert.equal(download.start(artifact), false);
+    await waitUpdate(download, 'ready');
+    assert.deepEqual(found, [artifact.url, cdn]);
+    let staged;
+    assert.equal(await download.install(async file => {
+      staged = file;
+      assert.deepEqual(await readFile(file), updatePayload);
+      assert.match(await readFile(file + ':Zone.Identifier', 'utf8'), /ZoneId=3/);
+      return false;
+    }), false);
+    assert.equal(download.state().phase, 'ready');
+    await writeFile(staged, Buffer.alloc(updatePayload.length, 0));
+    assert.equal(await download.install(async () => assert.fail('Abrió un archivo modificado')), false);
+    assert.equal(download.state().phase, 'error');
+    assert.deepEqual(await readdir(work), []);
+  } finally {
+    await Promise.all(downloads.map(download => download.close()));
+    await cleanTestDirectory(work);
+  }
+});
+
 test('el aviso de actualización abre la versión oficial al pulsar Descargar', { skip: Boolean(installed), timeout: 40_000 }, async () => {
   const work = await mkdtemp(path.join(tmpdir(), 'pliego-updates-'));
   let app;
@@ -158,7 +264,7 @@ test('el aviso de actualización abre la versión oficial al pulsar Descargar', 
     page.setDefaultTimeout(8_000);
     await page.getByText('Pliego 1.11.0 beta disponible', { exact: true }).waitFor();
     assert.deepEqual(await app.evaluate(() => globalThis.openedUpdates), []);
-    await page.getByRole('button', { name: 'Descargar actualización', exact: true }).click();
+    await page.getByRole('button', { name: 'Ver actualización en GitHub', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('#update-download').disabled);
     assert.deepEqual(await app.evaluate(() => globalThis.openedUpdates), [updateRepository + '/tag/v1.11.0']);
     await page.getByRole('button', { name: 'Ocultar aviso de actualización' }).click();
@@ -187,6 +293,49 @@ test('el aviso de actualización abre la versión oficial al pulsar Descargar', 
     await page.waitForFunction(() => ![...document.querySelectorAll('button')].find(button => button.textContent === 'Ver novedades en GitHub').disabled);
     assert.deepEqual(await app.evaluate(() => globalThis.openedUpdates),
       [updateRepository + '/tag/v1.11.0', updateRepository]);
+  } finally {
+    if (app) await app.close().catch(() => {});
+    await cleanTestDirectory(work);
+  }
+});
+
+test('la app descarga, pide confirmación y entrega el instalador verificado a Windows', { skip: Boolean(installed), timeout: 30_000 }, async () => {
+  const work = await mkdtemp(path.join(tmpdir(), 'pliego-updates-ux-'));
+  let app;
+  try {
+    const proof = path.join(work, 'abierto.bin');
+    await writeFile(path.join(work, 'package.json'), JSON.stringify({ name: 'pliego', version: '1.11.1', main: 'main.cjs' }));
+    await writeFile(path.join(work, 'main.cjs'), `
+      const { dialog, net, shell } = require('electron');
+      const { readFile, writeFile } = require('node:fs/promises');
+      require(${JSON.stringify(path.join(root, 'src', 'updates.cjs'))}).isInstalledForUpdates = async () => true;
+      globalThis.updateDecision = 1;
+      globalThis.updatePrompts = 0;
+      net.fetch = async () => Response.json(${JSON.stringify([verifiedRelease('1.12.0')])});
+      globalThis.fetch = async () => new Response(Buffer.from(${JSON.stringify(updatePayload.toString('base64'))}, 'base64'));
+      dialog.showMessageBox = async () => { globalThis.updatePrompts++; return { response: globalThis.updateDecision }; };
+      shell.openPath = async file => {
+        await writeFile(${JSON.stringify(proof)}, await readFile(file));
+        return '';
+      };
+      require(${JSON.stringify(path.join(root, 'src', 'main.cjs'))});
+    `);
+    app = await launchSource({ args: [work, '--user-data-dir=' + path.join(work, 'profile')], cwd: root });
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Descargar actualización', exact: true }).click();
+    await page.getByText('Pliego 1.12.0 descargado y verificado').waitFor();
+    await assert.rejects(access(proof));
+    const install = page.getByRole('button', { name: 'Instalar y reiniciar', exact: true });
+    await install.click();
+    await page.waitForFunction(() => !document.querySelector('#update-download').disabled);
+    assert.equal(await app.evaluate(() => globalThis.updatePrompts), 1);
+    await assert.rejects(access(proof));
+    await app.evaluate(() => { globalThis.updateDecision = 0; });
+    const exited = once(app.process(), 'exit');
+    await install.click();
+    const [code] = await exited;
+    assert.equal(code, 0);
+    assert.deepEqual(await readFile(proof), updatePayload);
   } finally {
     if (app) await app.close().catch(() => {});
     await cleanTestDirectory(work);
@@ -522,6 +671,278 @@ test('con zoom, el arrastre desplaza y el agarre gira la hoja sin perder la ampl
     await currentPage.getByText('1 / 2', { exact: true }).waitFor();
     await page.mouse.dblclick(x, y);
     await page.locator('#zoom-reset').getByText('100 %', { exact: true }).waitFor();
+  } finally {
+    if (app) await app.close().catch(() => {});
+    await cleanTestDirectory(work);
+  }
+});
+
+test('los dos bordes del manga responden a distintas alturas con y sin zoom', { skip: Boolean(installed), timeout: 45_000 }, async () => {
+  const work = await mkdtemp(path.join(tmpdir(), 'pliego-edge-'));
+  let app;
+  try {
+    const file = await comic(work, 'Bordes.cbz', { manga: true, pageCount: 8 });
+    app = await launchSource({ args: [root, '--user-data-dir=' + path.join(work, 'profile'), file], cwd: root });
+    const page = await app.firstWindow();
+    page.setDefaultTimeout(8000);
+    const label = page.locator('#page-label');
+    const fold = page.locator('#curl:visible, #paper-fold:visible');
+    const zoom = page.locator('#zoom-reset');
+    await label.getByText('1 / 8', { exact: true }).waitFor();
+    const tip = page.locator('#page-turn-tip-close');
+    if (await tip.isVisible()) await tip.click();
+    await page.locator('#settings').click();
+    await page.locator('#layout-option').selectOption('double');
+    assert.equal(await page.locator('#rtl-option').isChecked(), true);
+    await page.locator('#settings').click();
+    await label.click();
+    await page.locator('#page-number').fill('4');
+    await page.locator('#jump button').click();
+    await label.getByText('4–5 / 8', { exact: true }).waitFor();
+
+    const stage = await page.locator('#stage').boundingBox();
+    const paper = side => page.locator('.sheet.' + (side > 0 ? 'right' : 'left')).boundingBox();
+    const outer = (sheet, side) => side > 0 ? sheet.x + sheet.width : sheet.x;
+    const follows = direction => page.waitForFunction(sign => {
+      const gl = document.querySelector('#curl').getContext('webgl');
+      const program = gl.getParameter(gl.CURRENT_PROGRAM);
+      return sign * gl.getUniform(program, gl.getUniformLocation(program, 'uNormal'))[1] > .06;
+    }, direction);
+    for (const side of [-1, 1]) {
+      const sheet = await paper(side);
+      for (const height of [.24, .76]) {
+        const x = outer(sheet, side) - 4 * side;
+        const y = sheet.y + sheet.height * height;
+        await page.mouse.move(x, y);
+        assert.equal(await page.locator('#stage').getAttribute('data-cursor'), 'fold');
+        await page.mouse.down();
+        await page.mouse.move(x - side * 16, y + 28, { steps: 3 });
+        await fold.waitFor();
+        await page.mouse.up();
+        await fold.waitFor({ state: 'hidden' });
+        assert.equal(await label.textContent(), '4–5 / 8');
+      }
+    }
+
+    for (const [side, height] of [[1, .04], [-1, .96]]) {
+      const sheet = await paper(side);
+      await page.mouse.move(outer(sheet, side) - 2 * side, sheet.y + sheet.height * height);
+      await page.evaluate(() => {
+        const canvas = document.querySelector('#curl');
+        const gl = canvas.getContext('webgl');
+        window.cornerPickup = new Promise(resolve => {
+          document.querySelector('#stage').addEventListener('pointerdown', () => {
+            const start = performance.now();
+            const samples = [];
+            function sample(time) {
+              if (time - start > 350) return resolve(samples);
+              if (gl && !canvas.hidden && time - start >= 135) {
+                const program = gl.getParameter(gl.CURRENT_PROGRAM);
+                samples.push(gl.getUniform(program, gl.getUniformLocation(program, 'uAxis')));
+              }
+              requestAnimationFrame(sample);
+            }
+            requestAnimationFrame(sample);
+          }, { once: true, capture: true });
+        });
+      });
+      await page.mouse.down();
+      await fold.waitFor();
+      const samples = await page.evaluate(() => window.cornerPickup);
+      await page.mouse.up();
+      await fold.waitFor({ state: 'hidden' });
+      if (samples.length) {
+        const travel = samples.at(-1) - samples[0];
+        assert.ok(Math.abs(travel) > 2 && samples.some(axis => {
+          const fraction = (axis - samples[0]) / travel;
+          return fraction > .15 && fraction < .85;
+        }), 'La esquina se levanta en varios fotogramas durante la pulsación larga');
+      }
+      assert.equal(await label.textContent(), '4–5 / 8');
+    }
+
+    for (const side of [-1, 1]) {
+      const sheet = await paper(side);
+      await page.mouse.move(outer(sheet, side), stage.y + stage.height / 2);
+      for (let i = 1; i <= 4; i++) {
+        await page.mouse.wheel(0, -100);
+        await zoom.getByText(Math.round(100 * 1.12 ** i) + ' %', { exact: true }).waitFor();
+      }
+      const cropped = await paper(side);
+      assert.ok(cropped.y < stage.y && cropped.y + cropped.height > stage.y + stage.height);
+      const x = outer(cropped, side) - 39 * side;
+      const y = stage.y + stage.height * (side > 0 ? .25 : .75);
+      await page.mouse.move(x, y);
+      assert.equal(await page.locator('#stage').getAttribute('data-cursor'), 'fold');
+      await page.mouse.down();
+      // At this angle the drag should turn the page instead of panning.
+      await page.mouse.move(x - side * 24, y + 29, { steps: 3 });
+      await fold.waitFor();
+      const webgl = await page.locator('#curl').isVisible();
+      if (webgl) {
+        await follows(-1);
+        await page.mouse.move(x - side * 26, y - 28, { steps: 7 });
+        await follows(1);
+      }
+      await page.mouse.move(x - side * stage.width * .40, y, { steps: 10 });
+      await page.mouse.up();
+      await label.getByText(side < 0 ? '6–7 / 8' : '4–5 / 8', { exact: true }).waitFor();
+      if (webgl) {
+        const gap = await page.locator('#curl').evaluate((canvas, side) => {
+          const gl = canvas.getContext('webgl');
+          const program = gl.getParameter(gl.CURRENT_PROGRAM);
+          const uniform = name => gl.getUniform(program, gl.getUniformLocation(program, 'u' + name));
+          return uniform('Axis') + (side < 0 ? uniform('Page')[2] : 0);
+        }, side);
+        assert.ok(Math.abs(gap) < 8, `La hoja llega al lomo al soltar con zoom (${gap} px)`);
+      }
+      assert.equal(await zoom.textContent(), '157 %');
+      await zoom.click();
+    }
+  } finally {
+    if (app) await app.close().catch(() => {});
+    await cleanTestDirectory(work);
+  }
+});
+
+test('Espacio y las flechas completan el pliegue antes de sustituir la página', { skip: Boolean(installed), timeout: 45_000 }, async () => {
+  const work = await mkdtemp(path.join(tmpdir(), 'pliego-key-turn-'));
+  let app;
+  try {
+    const file = await comic(work, 'Teclado.cbz', { pageCount: 7 });
+    app = await launchSource({ args: [root, '--user-data-dir=' + path.join(work, 'profile'), file], cwd: root });
+    const page = await app.firstWindow();
+    page.setDefaultTimeout(8000);
+    await page.waitForFunction(() => document.activeElement.id === 'stage');
+    const label = page.locator('#page-label');
+    const fold = page.locator('#curl:visible, #paper-fold:visible');
+    const tip = page.locator('#page-turn-tip-close');
+    if (await tip.isVisible()) await tip.click();
+    await page.locator('#settings').click();
+    await page.locator('#layout-option').selectOption('double');
+    await page.locator('#settings').click();
+    await page.locator('#stage').focus();
+
+    async function turn(key, destination) {
+      await page.keyboard.press(key);
+      await fold.waitFor();
+      const webgl = await page.locator('#curl').isVisible();
+      await label.getByText(destination, { exact: true }).waitFor();
+      if (webgl) {
+        const gap = await page.locator('#curl').evaluate(canvas => {
+          const gl = canvas.getContext('webgl');
+          const program = gl.getParameter(gl.CURRENT_PROGRAM);
+          const uniform = name => gl.getUniform(program, gl.getUniformLocation(program, 'u' + name));
+          return uniform('Axis') + (uniform('SpineSide') < 0 ? uniform('Page')[2] : 0);
+        });
+        assert.ok(Math.abs(gap) < 8, `${key}: la hoja debe llegar al lomo (${gap} px)`);
+      }
+    }
+
+    await turn('Space', '2–3 / 7');
+    await turn('ArrowRight', '4–5 / 7');
+    await turn('ArrowLeft', '2–3 / 7');
+    await turn('ArrowLeft', '1 / 7');
+    await turn('Space', '2–3 / 7');
+    const stage = await page.locator('#stage').boundingBox();
+    const first = await page.locator('.sheet.left').boundingBox();
+    await page.mouse.move(first.x, stage.y + stage.height / 2);
+    for (let i = 1; i <= 13; i++) {
+      await page.mouse.wheel(0, -100);
+      const percent = Math.min(400, Math.round(100 * 1.12 ** i));
+      await page.locator('#zoom-reset').getByText(percent + ' %', { exact: true }).waitFor();
+    }
+    const cropped = await page.locator('.sheet.right').boundingBox();
+    assert.ok(cropped.x >= stage.x + stage.width);
+    await turn('ArrowRight', '4–5 / 7');
+    assert.equal(await page.locator('#zoom-reset').textContent(), '400 %');
+  } finally {
+    if (app) await app.close().catch(() => {});
+    await cleanTestDirectory(work);
+  }
+});
+
+test('la trama de la página coincide al agarrarla y soltarla', { skip: Boolean(installed), timeout: 45_000 }, async () => {
+  const work = await mkdtemp(path.join(tmpdir(), 'pliego-trama-'));
+  let app;
+  try {
+    const file = path.join(work, 'Trama.cbz');
+    execFileSync(python, ['-I', '-B', '-c', String.raw`
+import struct, sys, zlib
+from zipfile import ZipFile
+
+def chunk(kind, data):
+    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+
+rows = []
+for y in range(150):
+    pixels = bytes(18 if (x + 2*y) % 43 < 5 else 42 if (x + y//2) % 7 < 3 and (y - x//2) % 7 < 3 else 205
+                  for x in range(150))
+    rows.append(b'\x00' + pixels * 12)
+header = struct.pack('>IIBBBBB', 1800, 2700, 8, 0, 0, 0, 0)
+start = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header)
+end = chunk(b'IEND', b'')
+frame = chunk(b'IDAT', zlib.compress(b''.join(rows) * 18))
+def control(sequence):
+    return chunk(b'fcTL', struct.pack('>IIIIIHHBB', sequence, 1800, 2700, 0, 0, 1, 10, 0, 0))
+second = zlib.compress((b'\x00' + bytes([230]) * 1800) * 2700)
+animated = start + chunk(b'acTL', struct.pack('>II', 2, 0)) + control(0) + frame + control(1)
+animated += chunk(b'fdAT', struct.pack('>I', 2) + second) + end
+with ZipFile(sys.argv[1], 'w') as archive:
+    archive.writestr('01.png', start + frame + end)
+    archive.writestr('02.png', animated)
+`, file], { windowsHide: true });
+    app = await launchSource({ args: [root, '--user-data-dir=' + path.join(work, 'profile'), file], cwd: root });
+    const page = await app.firstWindow();
+    await page.waitForFunction(() => document.activeElement.id === 'stage');
+    const tip = page.locator('#page-turn-tip-close');
+    if (await tip.isVisible()) await tip.click();
+    const sheet = await page.locator('.sheet').first().boundingBox();
+    const area = { x: Math.round(sheet.x + sheet.width * .12), y: Math.round(sheet.y + sheet.height * .12), width: 80, height: 80 };
+    const photo = async () => Buffer.from(await app.evaluate(async ({ BrowserWindow }, area) => {
+      const image = await BrowserWindow.getAllWindows()[0].webContents.capturePage(area);
+      return image.toBitmap().toString('base64');
+    }, area), 'base64');
+    const x = sheet.x + sheet.width * .97;
+    const y = sheet.y + sheet.height * .92;
+    const canvas = page.locator('#curl:visible, #paper-fold:visible');
+    await page.mouse.move(x, y);
+    const still = await photo();
+
+    async function compareFold() {
+      await page.mouse.down();
+      await page.mouse.move(x - 38, y - 12, { steps: 4 });
+      await canvas.waitFor();
+      const held = await photo();
+      assert.equal(held.length, still.length);
+      let difference = 0;
+      for (let i = 0; i < held.length; i += 4) difference += Math.abs(held[i] - still[i]);
+      assert.ok(difference / (held.length / 4) < 6, 'La trama visible del lado plano debe conservar sus tonos');
+      const webgl = await page.locator('#curl').isVisible();
+      await page.mouse.up();
+      await canvas.waitFor({ state: 'hidden' });
+      assert.equal(await page.locator('#page-label').textContent(), '1 / 2');
+      assert.ok((await photo()).equals(still));
+      return webgl;
+    }
+
+    if (await compareFold()) {
+      const fallback = await page.evaluate(() => new Promise(resolve => {
+        const canvas = document.querySelector('#curl');
+        const extension = canvas.getContext('webgl').getExtension('WEBGL_lose_context');
+        if (!extension) return resolve(false);
+        canvas.addEventListener('webglcontextlost', () => resolve(true), { once: true });
+        extension.loseContext();
+      }));
+      if (fallback) {
+        await page.mouse.move(x, y);
+        assert.equal(await compareFold(), false);
+      }
+    }
+    await page.locator('#stage').focus();
+    await page.keyboard.press('ArrowRight');
+    await page.locator('#page-label').getByText('2 / 2', { exact: true }).waitFor();
+    await page.locator('.sheet img[data-animated="true"]').waitFor();
   } finally {
     if (app) await app.close().catch(() => {});
     await cleanTestDirectory(work);

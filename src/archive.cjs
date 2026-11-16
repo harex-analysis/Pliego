@@ -42,6 +42,29 @@ function checkImage(data) {
   }
 }
 
+function pageCanAnimate({ type, data }) {
+  if (type === 'image/webp') return data.toString('ascii', 12, 16) === 'VP8X' && Boolean(data[20] & 2);
+  if (type === 'image/avif') {
+    if (data.length < 16 || data.toString('ascii', 4, 8) !== 'ftyp') return true;
+    const end = data.readUInt32BE(0);
+    if (end < 16 || end > Math.min(data.length, 4096)) return true;
+    if (data.toString('ascii', 8, 12) === 'avis') return true;
+    for (let offset = 16; offset + 4 <= end; offset += 4) {
+      if (data.toString('ascii', offset, offset + 4) === 'avis') return true;
+    }
+    return false;
+  }
+  if (type !== 'image/png') return false;
+  // APNG declares its animation in an acTL chunk before the first IDAT.
+  for (let offset = 8; offset + 12 <= Math.min(data.length, 256 * 1024);) {
+    const chunk = data.toString('ascii', offset + 4, offset + 8);
+    if (chunk === 'acTL') return true;
+    if (chunk === 'IDAT') return false;
+    offset += data.readUInt32BE(offset) + 12;
+  }
+  return true;
+}
+
 async function openArchive(filename, extractor, { metadata = false } = {}) {
   if (!/\.(cbr|cbz|rar|zip)$/i.test(filename)) {
     throw new Error('Elige un archivo CBR, CBZ, RAR o ZIP.');
@@ -142,6 +165,13 @@ async function openArchive(filename, extractor, { metadata = false } = {}) {
   }
   return {
     id, filename, title: path.parse(filename).name, count: entries.length, read, metadata: info,
+    async pageCanAnimate(index) {
+      const type = entries[index]?.type;
+      if (type === 'image/gif') return true;
+      if (!['image/png', 'image/webp', 'image/avif'].includes(type)) return false;
+      const page = await read(index);
+      return !page || pageCanAnimate(page);
+    },
     close() { controller.abort(); cache.clear(); }
   };
 }

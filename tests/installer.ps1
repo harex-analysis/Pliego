@@ -11,6 +11,7 @@ if ((Test-Path -LiteralPath $key) -or (Test-Path -LiteralPath $shortcut)) {
 $work = Join-Path ([IO.Path]::GetTempPath()) ('pliego-setup-' + [guid]::NewGuid().ToString('N'))
 $installed = Join-Path $work 'Pliego prueba'
 $exe = Join-Path $installed 'Pliego.exe'
+$marker = Join-Path $installed '.pliego-installed'
 $uninstaller = Join-Path $installed 'Desinstalar Pliego.exe'
 New-Item -ItemType Directory -Path $work | Out-Null
 
@@ -36,6 +37,9 @@ try {
   }
   $version = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
   if ($registration.DisplayVersion -ne $version) { throw 'La versión instalada no coincide con el registro.' }
+  if ([IO.File]::ReadAllText($marker, [Text.Encoding]::Unicode) -ne $exe) {
+    throw 'El instalador no identificó correctamente su ubicación para las actualizaciones.'
+  }
   $previousExe = $env:PLIEGO_TEST_EXE
   try {
     $env:PLIEGO_TEST_EXE = $exe
@@ -49,15 +53,15 @@ try {
   Set-Content -LiteralPath $userFile 'Conservar durante la actualización y desinstalación.'
   $locked = [IO.File]::Open($exe, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
   try {
-    $runningUpdate = Start-Process -FilePath $Installer -ArgumentList "/S /D=$installed" -Wait -PassThru -WindowStyle Hidden
+    $runningUpdate = Start-Process -FilePath $Installer -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
     if ($runningUpdate.ExitCode -eq 0) { throw 'La actualización continuó a pesar de que el ejecutable estaba en uso.' }
   } finally {
     $locked.Dispose()
   }
-  Run-Installer $Installer "/S /D=$installed"
+  Run-Installer $Installer '/S'
   Remove-TestInstallation
   if ((Test-Path -LiteralPath $key) -or (Test-Path -LiteralPath $shortcut) -or
-      (Test-Path -LiteralPath $exe) -or !(Test-Path -LiteralPath $userFile)) {
+      (Test-Path -LiteralPath $exe) -or (Test-Path -LiteralPath $marker) -or !(Test-Path -LiteralPath $userFile)) {
     throw 'La desinstalación no limpió sus archivos o tocó un archivo ajeno.'
   }
   Write-Output "Pliego $version instalado, probado y desinstalado."

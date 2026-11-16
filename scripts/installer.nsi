@@ -8,6 +8,7 @@ Unicode true
 Name "Pliego"
 OutFile "$%PLIEGO_INSTALLER_FILE%"
 InstallDir "$LOCALAPPDATA\Programs\Pliego"
+InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 RequestExecutionLevel user
 SetCompressor /SOLID zlib
 CRCCheck force
@@ -109,6 +110,11 @@ canInstall:
   IfErrors installFailed
   WriteUninstaller "$INSTDIR\Desinstalar Pliego.exe"
   IfErrors installFailed
+  FileOpen $1 "$INSTDIR\.pliego-installed" w
+  IfErrors installFailed
+  FileWriteUTF16LE $1 "$INSTDIR\Pliego.exe"
+  FileClose $1
+  IfErrors installFailed
   CreateShortcut "$SMPROGRAMS\Pliego.lnk" "$INSTDIR\Pliego.exe"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "Pliego"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "$%PLIEGO_VERSION%"
@@ -138,6 +144,9 @@ Section "Uninstall"
   Delete "$INSTDIR\Pliego.exe"
   IfErrors uninstallFailed
   !include "$%PLIEGO_REMOVE_FILES%"
+  IfFileExists "$INSTDIR\.pliego-installed" 0 +3
+    Delete "$INSTDIR\.pliego-installed"
+    IfErrors uninstallFailed
   ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
   ${If} $0 == $INSTDIR
     Delete "$SMPROGRAMS\Pliego.lnk"

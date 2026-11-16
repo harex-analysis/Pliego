@@ -1,3 +1,5 @@
+import { pageRaster, pageScale } from './page-art.mjs';
+
 const vertexSource = `
   attribute vec2 aVertex;
   varying vec2 vPoint;
@@ -359,25 +361,24 @@ function foldTravel(offset, radius) {
   return offset >= arc ? 2 * offset - arc : offset - radius * Math.sin(offset / radius);
 }
 
-function minimumFoldAxis(paper, height, nx, ny, radius) {
+function minimumFoldAxis(paper, height, nx, ny, radius, zoomed) {
   const edge = nx > 0 ? paper.w : 0;
   const hinge = nx * (paper.w - edge) + Math.max(0, ny * paper.h);
-  if (!ny) return hinge;
-  const firstRoom = Math.max(0, paper.y - 1);
-  const lastRoom = Math.max(0, height - 1 - paper.y - paper.h);
-  const room = ny > 0 ? firstRoom : lastRoom;
+  // At higher zoom the viewport clips the paper without constraining its motion.
+  if (zoomed || !ny) return hinge;
+  const room = Math.max(0, ny > 0 ? paper.y - 1 : height - 1 - paper.y - paper.h);
   // The vertical extrema of the cylinder projection occur at the sheet corners.
   const first = nx * edge - pullAxis((ny > 0 ? room : room + paper.h) / Math.abs(ny), radius);
   const last = nx * edge + ny * paper.h - pullAxis((ny > 0 ? room + paper.h : room) / Math.abs(ny), radius);
   return Math.max(hinge, first, last);
 }
 
-function constrainFold(paper, pose, height, grip, flat = false) {
+function constrainFold(paper, pose, height, grip, flat, zoomed) {
   const side = Math.sign(pose.nx);
   const edge = side > 0 ? paper.w : 0;
   const key = flat ? 'crease' : 'axis';
   const radius = flat ? 0 : pose.radius;
-  const axis = minimumFoldAxis(paper, height, pose.nx, pose.ny, radius);
+  const axis = minimumFoldAxis(paper, height, pose.nx, pose.ny, radius, zoomed);
   if (pose[key] >= axis) return pose;
   const x = grip?.point ? grip.x * paper.w : edge;
   const y = (grip?.y ?? .5) * paper.h;
@@ -397,7 +398,7 @@ function constrainFold(paper, pose, height, grip, flat = false) {
     const nx = side * Math.cos(angle);
     const ny = Math.sin(angle);
     const anchor = nx * x + ny * y;
-    const limit = minimumFoldAxis(paper, height, nx, ny, radius);
+    const limit = minimumFoldAxis(paper, height, nx, ny, radius, zoomed);
     const travel = Math.min(nx * dx + ny * dy, foldTravel(anchor - limit, radius));
     const error = (dx - nx * travel) ** 2 + (dy - ny * travel) ** 2 +
       ((1 - t) * desiredAngle * paper.w * .035) ** 2;
@@ -441,7 +442,7 @@ function advanceCenterTurn(state, target, elapsed) {
   }
 }
 
-function trackFold(height, flat = false) {
+function trackFold(width, height, zoomed, flat = false) {
   const key = flat ? 'crease' : 'axis';
   const points = [0, .25, .5, .75, 1];
   let previous;
@@ -451,10 +452,27 @@ function trackFold(height, flat = false) {
   let verticalMotion = 0;
   let centerVelocity = 0;
   let centerRelease;
+  let pickupAt;
+  let holdAt;
 
-  return (paper, pose, grip, time) => {
-    const target = pose.centerTurn === undefined ? constrainFold(paper, pose, height, grip, flat) : pose;
-    if (!previous) {
+  return (paper, side, progress, tilt, grip, time) => {
+    const corner = cornerGripWeight(side, grip);
+    let lifting = false;
+    if (corner > 0 && !isCenterGrip(side, grip)) {
+      pickupAt ??= time;
+      if (grip.held) holdAt ??= time;
+      const pickup = smoothStep(0, 72, time - pickupAt);
+      const hold = grip.held ? smoothStep(0, 90, time - holdAt) : 0;
+      // Let a corner lift into the grip before adding the extra curl of a long press.
+      const initialLift = .016 * (1 - corner * (1 - pickup));
+      const extraLift = grip.held ? .027 * (1 - corner * (1 - hold)) : 0;
+      grip = { ...grip, cornerLift: initialLift + extraLift };
+      lifting = grip.release === undefined && (pickup < 1 || (grip.held && hold < 1));
+    }
+    const pose = foldGeometry(paper, side, progress, tilt, grip);
+    const target = pose.centerTurn === undefined ? constrainFold(paper, pose, height, grip, flat, zoomed) : pose;
+    // Timed turns already ease into their target poses. Only a live grip needs motion limiting.
+    if (!previous || !grip?.point) {
       previous = target;
       previousTime = time;
       previousPoint = grip?.point;
@@ -543,27 +561,29 @@ function trackFold(height, flat = false) {
     }
     if (drag > .2) verticalMotion = smoothStep(.50, .91, Math.abs(dy) / drag);
     else verticalMotion *= Math.exp(-elapsed / 45);
-    const side = Math.sign(target.nx);
-    const edgeFollow = grip?.point && grip.release === undefined
-      ? sideGripWeight(side, grip) * verticalMotion : 0;
-    // The timed fall can move the entire fold farther per frame than a held sheet.
-    const cornerFall = grip?.release !== undefined
-      ? cornerGripWeight(side, grip) * smoothStep(0, .21, grip.release) : 0;
-    const maxMotion = elapsed * (1.4 + 2.4 * edgeFollow + 4 * cornerFall) + momentum;
-    const oldLimit = minimumFoldAxis(paper, height, previous.nx, previous.ny, flat ? 0 : previous.radius);
+    const outside = grip?.point ? outsideGrip(side, grip) : 0;
+    const edgeFollow = grip?.point && grip.release === undefined ? sideGripWeight(side, grip) * verticalMotion : 0;
+    const falling = grip?.release !== undefined ? outside * smoothStep(0, .24, grip.release) : 0;
+    const speed = 1.4 + 2.6 * edgeFollow + (4.6 + 1.2 * corner) * falling;
+    const maxMotion = elapsed * speed + momentum * (1 - .42 * outside);
+    const oldLimit = minimumFoldAxis(paper, height, previous.nx, previous.ny, flat ? 0 : previous.radius, zoomed);
     if (previous[key] < oldLimit) previous = { ...previous, [key]: oldLimit };
     const wantedFlex = flat ? 0 : target.flex;
     const flexStep = .38 * elapsed;
     const deltaFlex = wantedFlex - previous.flex;
     const flex = Math.abs(deltaFlex) <= flexStep ? wantedFlex : previous.flex + Math.sign(deltaFlex) * flexStep;
-    const flexByRow = !flat && (previous.flex || flex)
-      ? points.map(v => smoothStep(0, .72, Math.abs(v - (grip?.y ?? .5)))) : undefined;
+    const left = zoomed ? clamp(-paper.x, 0, paper.w) : 0;
+    const right = zoomed ? clamp(width - paper.x, 0, paper.w) : paper.w;
+    const top = zoomed ? clamp(-paper.y, 0, paper.h) : 0;
+    const bottom = zoomed ? clamp(height - paper.y, 0, paper.h) : paper.h;
+    const flexByRow = !flat && (previous.flex || flex) ? points.map(v =>
+      smoothStep(0, .72, Math.abs((top + (bottom - top) * v) / paper.h - (grip?.y ?? .5)))) : undefined;
     function movement(candidate) {
       let max = 0;
       for (const u of points) {
-        const x = paper.w * u;
+        const x = left + (right - left) * u;
         for (let row = 0; row < points.length; row++) {
-          const y = paper.h * points[row];
+          const y = top + (bottom - top) * points[row];
           const flex = flexByRow?.[row] ?? 0;
           const old = foldTravel(previous.nx * x + previous.ny * y - previous[key] - previous.flex * flex,
             flat ? 0 : previous.radius);
@@ -576,7 +596,7 @@ function trackFold(height, flat = false) {
     }
     const pending = flex === target.flex ? target : { ...target, flex };
     if (movement(pending) <= maxMotion) {
-      previous = { ...pending, wave, moving: wave !== wantedWave || flex !== wantedFlex };
+      previous = { ...pending, wave, moving: lifting || wave !== wantedWave || flex !== wantedFlex };
       return previous;
     }
 
@@ -595,7 +615,7 @@ function trackFold(height, flat = false) {
       const nx = side * Math.cos(angle);
       const ny = Math.sin(angle);
       const radius = previous.radius + (target.radius - previous.radius) * t;
-      const axis = Math.max(minimumFoldAxis(paper, height, nx, ny, flat ? 0 : radius),
+      const axis = Math.max(minimumFoldAxis(paper, height, nx, ny, flat ? 0 : radius, zoomed),
         (nx * paper.w + ny * paper.h) / 2 - oldOffset - (newOffset - oldOffset) * t);
       const candidate = { ...target, nx, ny, radius, flex, [key]: axis };
       if (movement(candidate) <= maxMotion) {
@@ -702,7 +722,7 @@ function outsideGrip(side, grip) {
 }
 
 function sideGripWeight(side, grip) {
-  return outsideGrip(side, grip) * (1 - smoothStep(.34, .73, Math.abs(2 * grip.y - 1)));
+  return outsideGrip(side, grip) * (1 - .68 * smoothStep(.46, .97, Math.abs(2 * grip.y - 1)));
 }
 
 export function cornerGripWeight(side, grip) {
@@ -722,7 +742,7 @@ function heldGeometry(paper, side, grip, rest) {
   const x = grip.x * w;
   const y = grip.y * h;
   const motion = smoothStep(.012, .12, Math.hypot(grip.inward, grip.vertical));
-  const lift = w * (grip.held ? .043 : .016) * (1 - motion * .91);
+  const lift = w * (grip.cornerLift ?? (grip.held ? .043 : .016)) * (1 - motion * .91);
   const dx = Math.max(1, (paper.x + x - grip.point.x) * side + lift);
   const dy = paper.y + y - grip.point.y + (2 * grip.y - 1) * lift * (1 - motion);
 
@@ -852,18 +872,8 @@ export function createCurl(canvas, { mesh = false, adaptive = false } = {}) {
 
   const textures = [gl.createTexture(), gl.createTexture()];
   const loaded = [null, null];
-  const maxSize = Math.min(2048, gl.getParameter(gl.MAX_TEXTURE_SIZE));
-  const resizeBuffer = document.createElement('canvas');
-  function upload(image, unit) {
-    if (loaded[unit] === image.src) return;
-    const ratio = Math.min(1, maxSize / Math.max(image.naturalWidth, image.naturalHeight));
-    let source = image;
-    if (ratio < 1) {
-      resizeBuffer.width = Math.max(1, Math.round(image.naturalWidth * ratio));
-      resizeBuffer.height = Math.max(1, Math.round(image.naturalHeight * ratio));
-      resizeBuffer.getContext('2d').drawImage(image, 0, 0, resizeBuffer.width, resizeBuffer.height);
-      source = resizeBuffer;
-    }
+  function upload(source, unit) {
+    if (loaded[unit] === source) return;
     gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, textures[unit]);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -871,17 +881,18 @@ export function createCurl(canvas, { mesh = false, adaptive = false } = {}) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-    loaded[unit] = image.src;
+    loaded[unit] = source;
   }
 
-  function begin({ width, height, paper, back, side, bound }) {
+  function begin({ width, height, paper, back, side, bound, zoomed }) {
     if (gl.isContextLost()) return null;
-    const scale = Math.min(window.devicePixelRatio, 1.65, 2150 / width, 1500 / height);
+    const scale = pageScale(width, height);
     canvas.width = Math.max(1, Math.round(width * scale));
     canvas.height = Math.max(1, Math.round(height * scale));
     gl.viewport(0, 0, canvas.width, canvas.height);
-    upload(paper.image, 0);
-    upload(back?.image || paper.image, 1);
+    const front = pageRaster(paper, scale).source;
+    upload(front, 0);
+    upload(back?.image ? pageRaster(back, scale).source : front, 1);
     if (gl.getError() !== gl.NO_ERROR) {
       loaded.fill(null);
       return null;
@@ -897,13 +908,13 @@ export function createCurl(canvas, { mesh = false, adaptive = false } = {}) {
       gl.uniform2f(uniforms[name], (half ?? 0) / 2, half === undefined ? 1 : .5);
     }
     canvas.hidden = false;
-    const track = adaptive ? trackFold(height) : null;
+    const track = adaptive ? trackFold(width, height, zoomed) : null;
 
     return function draw(progress, tilt, geometry = paper, grip, time) {
-      const pose = foldGeometry(geometry, side, progress, tilt, grip, mesh);
+      const pose = track ? track(geometry, side, progress, tilt, grip, time) :
+        foldGeometry(geometry, side, progress, tilt, grip, mesh);
       const { nx, ny, axis, radius, taper, flex, overhang, wave, waveCenter, waveLean,
-        waveSpan: span, centerTurn, centerRoot, tip, skew, contact, lead, upperDelay, lowerDelay, moving } = track
-        ? track(geometry, pose, grip, time) : pose;
+        waveSpan: span, centerTurn, centerRoot, tip, skew, contact, lead, upperDelay, lowerDelay, moving } = pose;
       gl.uniform4f(uniforms.Page, geometry.x, geometry.y, geometry.w, geometry.h);
       gl.uniform1f(uniforms.Spine, geometry.spine ?? (paper.side !== 'single' && paper.half === undefined ? 1 : 0));
       gl.uniform2f(uniforms.Normal, nx, ny);
@@ -945,13 +956,15 @@ export function createPaperFold(canvas) {
   if (!ctx) return null;
 
   return {
-    begin({ width, height, paper, back, side, bound, adaptive }) {
-      const scale = Math.min(window.devicePixelRatio, 1.35, 1800 / width, 1250 / height);
+    begin({ width, height, paper, back, side, bound, adaptive, zoomed }) {
+      const scale = pageScale(width, height);
       canvas.width = Math.max(1, Math.round(width * scale));
       canvas.height = Math.max(1, Math.round(height * scale));
+      const front = { ...pageRaster(paper, scale), half: paper.half };
+      const reverse = back?.image ? { ...pageRaster(back, scale), half: back.half } : null;
       let w, h, corners;
       canvas.hidden = false;
-      const track = adaptive ? trackFold(height, true) : null;
+      const track = adaptive ? trackFold(width, height, zoomed, true) : null;
 
       function tint(left, top, width, height, shade) {
         if (Math.abs(shade) < .001) return;
@@ -959,11 +972,11 @@ export function createPaperFold(canvas) {
         ctx.fillRect(left, top, width, height);
       }
 
-      function paint({ image, half }, wave, center, face = side) {
-        const sourceWidth = half === undefined ? image.naturalWidth : image.naturalWidth / 2;
+      function paint({ source, width, height, half }, wave, center, face = side) {
+        const sourceWidth = half === undefined ? width : width / 2;
         const sourceX = (half ?? 0) * sourceWidth;
         if (!wave) {
-          ctx.drawImage(image, sourceX, 0, sourceWidth, image.naturalHeight, 0, 0, w, h);
+          ctx.drawImage(source, sourceX, 0, sourceWidth, height, 0, 0, w, h);
           return;
         }
         const strips = 26;
@@ -975,7 +988,7 @@ export function createPaperFold(canvas) {
           const width = projected(w * (i + 1) / strips) - left;
           const slope = face * ripple(x + w / (2 * strips)).slope;
           const shade = clamp(.60 * slope + .18 * slope ** 2, -.18, .34);
-          ctx.drawImage(image, sourceX + sourceWidth * i / strips, 0, sourceWidth / strips, image.naturalHeight,
+          ctx.drawImage(source, sourceX + sourceWidth * i / strips, 0, sourceWidth / strips, height,
             left, 0, width + .4, h);
           tint(left, 0, width + .4, h, shade);
         }
@@ -1029,26 +1042,26 @@ export function createPaperFold(canvas) {
           }
           strips.sort((a, b) => a.z - b.z);
           for (const strip of strips) {
-            const reverse = strip.dx < 0;
-            const page = reverse && back?.image ? back : paper;
-            const mirrored = reverse && page === back;
-            const sourceWidth = page.image.naturalWidth * (page.half === undefined ? 1 : .5);
+            const flipped = strip.dx < 0;
+            const page = (flipped && reverse) || front;
+            const mirrored = flipped && page === reverse;
+            const sourceWidth = page.width * (page.half === undefined ? 1 : .5);
             const u = mirrored ? count - 1 - strip.i : strip.i;
             const sourceX = ((page.half ?? 0) + u / count) * sourceWidth;
-            const sourceHeight = page.image.naturalHeight / bands;
+            const sourceHeight = page.height / bands;
             const width = 1 + Math.min(.15, .55 / Math.abs(strip.dx));
             const height = band + 1 === bands ? 1 : 1 + .55 / Math.max(1, strip.rise);
             ctx.save();
             ctx.transform(strip.dx, strip.dy, strip.shift, strip.rise, strip.x, strip.y);
-            if (reverse && !back?.image) {
+            if (flipped && !reverse) {
               ctx.fillStyle = '#e6e6e6';
               ctx.fillRect(0, 0, width, height);
               ctx.globalAlpha = .14;
             }
             if (mirrored) ctx.transform(-1, 0, 0, 1, width, 0);
-            ctx.drawImage(page.image, sourceX, sourceHeight * band, sourceWidth / count, sourceHeight, 0, 0, width, height);
+            ctx.drawImage(page.source, sourceX, sourceHeight * band, sourceWidth / count, sourceHeight, 0, 0, width, height);
             ctx.globalAlpha = 1;
-            const turnShade = (reverse ? .17 : .32) * Math.sin(strip.angle) ** 2;
+            const turnShade = (flipped ? .17 : .32) * Math.sin(strip.angle) ** 2;
             const shade = clamp(turnShade + .60 * strip.slope + .18 * strip.slope ** 2, -.18, .62);
             tint(0, 0, width, height, shade);
             ctx.restore();
@@ -1086,8 +1099,8 @@ export function createPaperFold(canvas) {
       return (progress, tilt, geometry = paper, grip, time) => {
         ({ w, h } = geometry);
         corners = [[0, 0], [w, 0], [w, h], [0, h]];
-        const pose = foldGeometry(geometry, side, progress, tilt, grip);
-        const tracked = track ? track(geometry, pose, grip, time) : pose;
+        const tracked = track ? track(geometry, side, progress, tilt, grip, time) :
+          foldGeometry(geometry, side, progress, tilt, grip);
         const { nx, ny, radius, crease, overhang, wave, waveCenter, centerTurn, moving } = tracked;
         ctx.setTransform(scale, 0, 0, scale, 0, 0);
         ctx.clearRect(0, 0, width, height);
@@ -1108,7 +1121,7 @@ export function createPaperFold(canvas) {
 
           ctx.save();
           clip(nx, ny, crease, -1);
-          paint(paper, wave, waveCenter);
+          paint(front, wave, waveCenter);
           foldShade(nx, ny, crease, -radius, [[0, '#0007'], [1, '#0000']]);
           ctx.restore();
 
@@ -1121,8 +1134,8 @@ export function createPaperFold(canvas) {
           ctx.save();
           ctx.translate(w, 0);
           ctx.scale(-1, 1);
-          ctx.globalAlpha = back?.image ? 1 : .15;
-          paint(back?.image ? back : paper, wave, waveCenter, -side);
+          ctx.globalAlpha = reverse ? 1 : .15;
+          paint(reverse || front, wave, waveCenter, -side);
           ctx.restore();
           foldShade(nx, ny, crease, radius * 2.2, [[0, '#0008'], [.25, '#fff6'], [1, '#fff0']]);
           ctx.restore();

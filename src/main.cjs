@@ -3,7 +3,7 @@ const { readFile, writeFile, rename, stat } = require('node:fs/promises');
 const path = require('node:path');
 const { openArchive } = require('./archive.cjs');
 const { createTransfers } = require('./torrent.cjs');
-const { createUpdateCheck } = require('./updates.cjs');
+const { createUpdateCheck, createUpdateDownload, isInstalledForUpdates } = require('./updates.cjs');
 const { addBook, applySuggestions, bookTitle, categories, coverColumnOptions, findGroup, libraryView, loadLibrary, renameBooks,
   reorder, suggestGroups, updateGroup } = require('./library.cjs');
 
@@ -24,6 +24,7 @@ const files = {
   '/downloads.mjs': ['downloads.mjs', 'text/javascript; charset=utf-8'],
   '/curl.mjs': ['curl.mjs', 'text/javascript; charset=utf-8'],
   '/layout.mjs': ['layout.mjs', 'text/javascript; charset=utf-8'],
+  '/page-art.mjs': ['page-art.mjs', 'text/javascript; charset=utf-8'],
   '/roboto.woff2': ['roboto.woff2', 'font/woff2'],
   '/pliego.svg': ['../../assets/pliego.svg', 'image/svg+xml']
 };
@@ -35,6 +36,7 @@ protocol.registerSchemesAsPrivileged([{
 let window;
 let archive;
 let transfers;
+let updateDownload;
 let state = loadLibrary({});
 let saves = Promise.resolve();
 let openRequest = 0;
@@ -167,11 +169,42 @@ async function start() {
     });
   }
 
-  const updates = createUpdateCheck(app.getVersion(), (...args) => net.fetch(...args));
+  const canInstall = await isInstalledForUpdates(process.execPath, app.isPackaged);
+  const updates = createUpdateCheck(app.getVersion(), (...args) => net.fetch(...args), canInstall);
+  // Node's fetch exposes manual redirect responses so the CDN can be checked before following them.
+  updateDownload = createUpdateDownload(path.join(app.getPath('userData'), 'updates'), (...args) => fetch(...args), status => {
+    if (!window?.isDestroyed()) window?.webContents.send('updates:transfer', status);
+  });
+  await updateDownload.cleanPrevious();
+  handle('reader:page-animation', (id, index) => archive?.id === id && Number.isSafeInteger(index) &&
+    index >= 0 && index < archive.count ? archive.pageCanAnimate(index) : true);
   handle('updates:check', () => updates.check());
   handle('updates:refresh', () => updates.refresh());
   handle('updates:open', () => openRelease(updates.releasePage()));
   handle('updates:notes', () => openRelease(updates.notesPage()));
+  handle('updates:transfer-state', () => updateDownload.state());
+  handle('updates:download', () => updateDownload.start(updates.installer()));
+  handle('updates:cancel', () => updateDownload.cancel());
+  let confirmingUpdate = false;
+  handle('updates:install', async () => {
+    if (!canInstall || confirmingUpdate || awaitingQuit || updateDownload.state().phase !== 'ready') return;
+    confirmingUpdate = true;
+    try {
+      const { version } = updateDownload.state();
+      const { response } = await dialog.showMessageBox(window, {
+        type: 'info', title: 'Actualizar Pliego', message: `Instalar Pliego ${version}`,
+        detail: 'Pliego guardará tu progreso y se cerrará para que puedas completar la instalación y volver a abrirlo.',
+        buttons: ['Instalar', 'Cancelar'], defaultId: 1, cancelId: 1
+      });
+      if (response !== 0 || awaitingQuit) return;
+      const opened = await updateDownload.install(async file => {
+        await saves;
+        if (awaitingQuit) return false;
+        return await shell.openPath(file) === '';
+      });
+      if (opened) app.quit();
+    } finally { confirmingUpdate = false; }
+  });
   async function openRelease(url) {
     if (!url) return false;
     try {
@@ -483,7 +516,8 @@ app.on('before-quit', event => {
   if (awaitingQuit) return;
   awaitingQuit = true;
   archive?.close();
-  Promise.resolve(transfers?.close()).catch(console.error).then(() => saves).finally(() => {
+  const tasks = [transfers?.close(), updateDownload?.close()];
+  Promise.all(tasks.map(task => Promise.resolve(task).catch(console.error))).then(() => saves).finally(() => {
     quitReady = true;
     app.quit();
   }).catch(console.error);

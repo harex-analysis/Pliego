@@ -6,6 +6,13 @@ contextBridge.exposeInMainWorld('pliego', {
   refreshUpdates: () => ipcRenderer.invoke('updates:refresh'),
   openUpdate: () => ipcRenderer.invoke('updates:open'),
   openReleaseNotes: () => ipcRenderer.invoke('updates:notes'),
+  updateTransfer: () => ipcRenderer.invoke('updates:transfer-state'),
+  downloadUpdate: () => ipcRenderer.invoke('updates:download'),
+  cancelUpdate: () => ipcRenderer.invoke('updates:cancel'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
+  onUpdateTransfer(callback) {
+    ipcRenderer.on('updates:transfer', (_event, status) => callback(status));
+  },
   choose: category => ipcRenderer.invoke('reader:choose', category),
   open: (file, category) => ipcRenderer.invoke('reader:open', file, category),
   drop: (file, category) => ipcRenderer.invoke('reader:open', webUtils.getPathForFile(file), category),
@@ -15,6 +22,7 @@ contextBridge.exposeInMainWorld('pliego', {
   editLibrary: (command, args) => ipcRenderer.invoke('library:edit', command, args),
   suggestGroups: category => ipcRenderer.invoke('library:suggest', category),
   recent: id => ipcRenderer.invoke('reader:recent', id),
+  pageCanAnimate: (id, index) => ipcRenderer.invoke('reader:page-animation', id, index),
   progress: (id, page, rtl, turned) => ipcRenderer.invoke('reader:progress', id, page, rtl, turned),
   settings: settings => ipcRenderer.invoke('reader:settings', settings),
   fullscreen: () => ipcRenderer.invoke('reader:fullscreen'),

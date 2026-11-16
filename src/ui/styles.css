@@ -140,7 +140,7 @@ h2 { margin: 0; font-size: 14px; font-weight: 650; }
 .sheet-layer, #curl, #paper-classic, #paper-fold, #paper-mesh { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .sheet { position: absolute; margin: 0; background: #dedede; box-shadow: 0 10px 36px #0009, 0 1px 2px #000a; }
 .sheet.left, .sheet.right { box-shadow: 0 10px 27px #0009; }
-.sheet img { display: block; width: 100%; height: 100%; }
+.sheet :is(img, canvas) { display: block; width: 100%; height: 100%; }
 .sheet.left::after, .sheet.right::after {
   content: "";
   position: absolute;
@@ -150,8 +150,8 @@ h2 { margin: 0; font-size: 14px; font-weight: 650; }
 .sheet.right::after { background: linear-gradient(to right, #0004, transparent 22px); }
 .sheet.panorama-leaf { overflow: hidden; box-shadow: none; }
 .sheet.panorama-leaf::after { content: none; }
-.sheet.panorama-leaf img { width: 200%; max-width: none; }
-.sheet.panorama-leaf.right img { transform: translateX(-50%); }
+.sheet.panorama-leaf :is(img, canvas) { width: 200%; max-width: none; }
+.sheet.panorama-leaf.right :is(img, canvas) { transform: translateX(-50%); }
 .sheet.empty { display: grid; place-items: center; background: var(--panel); color: var(--dim); padding: 14px; text-align: center; }
 .stage[data-cursor="fold"], .stage[data-cursor="pan"] { cursor: grab; }
 .stage[data-cursor="drag"] { cursor: grabbing; }

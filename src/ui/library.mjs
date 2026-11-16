@@ -73,7 +73,10 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   let importing = false;
   let suggesting = false;
   let version;
-  let announcedUpdate;
+  let availableUpdate;
+  let updateTransfer = { phase: 'idle' };
+  let updateDialog;
+  let updateRequest = false;
   let submitting = false;
   let orderEditing = false;
   let selecting = false;
@@ -612,8 +615,15 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   }
 
   async function checkUpdates() {
-    const update = await api.checkUpdates().catch(() => null);
+    const [update, transfer] = await Promise.all([
+      api.checkUpdates().catch(() => null), api.updateTransfer().catch(() => null)
+    ]);
+    if (transfer) updateTransfer = transfer;
     if (update) announceUpdate(update);
+    else if (updateTransfer.phase !== 'idle') {
+      byId('update-banner').hidden = false;
+      paintUpdate();
+    }
   }
 
   function updateText(update) {
@@ -621,10 +631,56 @@ export function createLibrary({ byId, icon, openComic, notice }) {
   }
 
   function announceUpdate(update) {
-    if (announcedUpdate === update.version) return;
-    announcedUpdate = update.version;
-    byId('update-message').textContent = updateText(update);
-    byId('update-banner').hidden = false;
+    if (availableUpdate?.version !== update.version) byId('update-banner').hidden = false;
+    availableUpdate = update;
+    paintUpdate();
+  }
+
+  function paintUpdate() {
+    const { phase, percentage, version, error } = updateTransfer;
+    let text;
+    let label;
+    if (phase === 'downloading') {
+      text = `Descargando Pliego ${version} · ${percentage} %`;
+      label = 'Cancelar descarga';
+    } else if (phase === 'ready') {
+      text = error || `Pliego ${version} descargado y verificado`;
+      label = 'Instalar y reiniciar';
+    } else if (phase === 'installing') {
+      text = `Abriendo el instalador de Pliego ${version}…`;
+      label = 'Instalar y reiniciar';
+    } else if (availableUpdate) {
+      text = error || updateText(availableUpdate);
+      label = availableUpdate.canDownload ? 'Descargar actualización' : 'Ver actualización en GitHub';
+    } else return;
+    for (const [status, control] of [[byId('update-message'), byId('update-download')],
+      [updateDialog?.status, updateDialog?.control]]) {
+      if (!status?.isConnected) continue;
+      status.textContent = text;
+      control.hidden = false;
+      control.textContent = label;
+      control.disabled = updateRequest || phase === 'installing';
+    }
+  }
+
+  async function runUpdate() {
+    if (updateRequest) return;
+    updateRequest = true;
+    paintUpdate();
+    try {
+      const { phase } = updateTransfer;
+      if (phase === 'downloading') await api.cancelUpdate();
+      else if (phase === 'ready') await api.installUpdate();
+      else if (availableUpdate?.canDownload) {
+        if (!await api.downloadUpdate()) throw Error();
+      }
+      else if (!await api.openUpdate()) throw Error();
+    } catch {
+      updateTransfer = { ...updateTransfer, error: 'No se pudo continuar con la actualización. Inténtalo de nuevo.' };
+    } finally {
+      updateRequest = false;
+      paintUpdate();
+    }
   }
 
   async function openRelease(open, control) {
@@ -647,18 +703,14 @@ export function createLibrary({ byId, icon, openComic, notice }) {
       control.hidden = true;
       status.textContent = 'Buscando actualizaciones…';
       const result = await api.refreshUpdates().catch(() => null);
+      if (!dialog.open || !status.isConnected) return;
       if (result?.status === 'available') {
+        updateDialog = { status, control };
+        control.onclick = runUpdate;
         announceUpdate(result.update);
-        status.textContent = updateText(result.update) + '.';
-        control.textContent = 'Descargar actualización';
-        control.onclick = async () => {
-          if (!await openRelease(api.openUpdate, control)) {
-            status.textContent = 'No se pudo abrir la descarga en GitHub.';
-          }
-        };
       } else if (result?.status === 'current') {
         byId('update-banner').hidden = true;
-        announcedUpdate = undefined;
+        availableUpdate = undefined;
         status.textContent = 'Pliego ' + version + ' está al día.';
         return;
       } else {
@@ -668,7 +720,11 @@ export function createLibrary({ byId, icon, openComic, notice }) {
       }
       control.hidden = false;
     }
-    check();
+    if (['downloading', 'ready', 'installing'].includes(updateTransfer.phase)) {
+      updateDialog = { status, control };
+      control.onclick = runUpdate;
+      paintUpdate();
+    } else check();
   }
 
   function showHelp() {
@@ -781,6 +837,7 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     suggest.setAttribute('aria-expanded', false);
     if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     dialogAction = undefined;
+    updateDialog = undefined;
   });
   dialog.addEventListener('cancel', event => { if (submitting) event.preventDefault(); });
   byId('library-cancel').addEventListener('click', closeDialog);
@@ -1395,8 +1452,11 @@ export function createLibrary({ byId, icon, openComic, notice }) {
     ['Acerca de Pliego', showAbout]
   ]));
   suggest.addEventListener('click', suggestGroups);
-  byId('update-download').addEventListener('click', async event => {
-    if (!await openRelease(api.openUpdate, event.currentTarget)) message('No se pudo abrir la descarga en GitHub.');
+  byId('update-download').addEventListener('click', runUpdate);
+  api.onUpdateTransfer(status => {
+    updateTransfer = status;
+    if (status.phase === 'ready') byId('update-banner').hidden = false;
+    paintUpdate();
   });
   byId('update-dismiss').addEventListener('click', () => {
     byId('update-banner').hidden = true;

@@ -2,6 +2,7 @@ import { createLibrary } from './library.mjs';
 import { createDownloads } from './downloads.mjs';
 import { cornerGripWeight, createCurl, createPaperFold, isCenterGrip, pullPaper, settlePaper } from './curl.mjs';
 import { createLayout, positionSheets, turningLeaves } from './layout.mjs';
+import { pageRaster, pageScale } from './page-art.mjs';
 
 const byId = id => document.getElementById(id);
 const stage = byId('stage');
@@ -110,7 +111,11 @@ function createComic(result) {
     const image = new Image();
     image.decoding = 'async';
     image.src = url(index);
-    const pending = image.decode().then(() => image, () => null);
+    const animation = window.pliego.pageCanAnimate(result.id, index).catch(() => true);
+    const pending = Promise.all([image.decode(), animation]).then(([, animated]) => {
+      if (animated) image.dataset.animated = 'true';
+      return image;
+    }, () => null);
     cache.set(index, pending);
     while (cache.size > 9) cache.delete(cache.keys().next().value);
     return pending;
@@ -222,8 +227,16 @@ function prepareNeighbors() {
 }
 
 function positioned(spread, offset = pan) {
-  return positionSheets(spread.indices, spread.images, {
+  const sheets = positionSheets(spread.indices, spread.images, {
     width: stage.clientWidth, height: stage.clientHeight, zoom, pan: offset, rtl: book.rtl
+  });
+  const scale = window.devicePixelRatio;
+  const align = value => Math.round(value * scale) / scale;
+  // Match the pixel grid of the stationary artwork and the unbent part of the fold.
+  return sheets.map(sheet => {
+    const x = align(sheet.x);
+    const y = align(sheet.y);
+    return { ...sheet, x, y, w: align(sheet.x + sheet.w) - x, h: align(sheet.y + sheet.h) - y };
   });
 }
 
@@ -245,18 +258,34 @@ function rectangle(element, sheet) {
   });
 }
 
+const sheetArtwork = new WeakMap();
+function drawSheetArtwork(element, sheet) {
+  if (!sheet.image) return;
+  const scale = pageScale(stage.clientWidth, stage.clientHeight);
+  const source = sheet.image.dataset.animated ? sheet.image : pageRaster(sheet, scale).source;
+  if (sheetArtwork.get(element) === source) return;
+  const label = `Página ${sheet.index + 1}`;
+  let artwork = source;
+  if (source === sheet.image) {
+    artwork = source.cloneNode();
+    artwork.alt = label;
+    artwork.draggable = false;
+  } else {
+    artwork.setAttribute('role', 'img');
+    artwork.setAttribute('aria-label', label);
+  }
+  element.replaceChildren(artwork);
+  sheetArtwork.set(element, source);
+}
+
 function sheetNode(sheet) {
   const element = document.createElement('figure');
   element.className = 'sheet ' + sheet.side;
   if (sheet.half !== undefined) element.classList.add('panorama-leaf');
   element.dataset.page = sheet.index + 1;
   rectangle(element, sheet);
-  if (sheet.image) {
-    const image = sheet.image.cloneNode();
-    image.alt = `Página ${sheet.index + 1}`;
-    image.draggable = false;
-    element.append(image);
-  } else {
+  if (sheet.image) drawSheetArtwork(element, sheet);
+  else {
     element.classList.add('empty');
     element.textContent = `No se pudo cargar la página ${sheet.index + 1}.`;
   }
@@ -290,7 +319,10 @@ function animateLayout(previous) {
 function reposition() {
   if (!current) return;
   positioned(current).forEach((sheet, index) => {
-    if (scene.children[index]) rectangle(scene.children[index], sheet);
+    const element = scene.children[index];
+    if (!element) return;
+    rectangle(element, sheet);
+    drawSheetArtwork(element, sheet);
   });
 }
 
@@ -339,15 +371,18 @@ function physicalSide(direction) {
 function hitEdge(position, sheets = current && positioned(current)) {
   if (!sheets) return 0;
   const closeUp = zoom > 1;
-  const lip = closeUp ? 0 : 24;
+  const lip = closeUp ? 12 : 24;
   for (const direction of [1, -1]) {
     if (!neighbors.has(direction)) continue;
     const side = physicalSide(direction);
     const sheet = side > 0 ? sheets.at(-1) : sheets[0];
     const edge = side > 0 ? sheet.x + sheet.w : sheet.x;
-    if (closeUp && (edge < 0 || edge > stage.clientWidth)) continue;
-    const edgeWidth = closeUp ? Math.min(24, sheet.w * .12) : Math.min(96, sheet.w * .24);
-    if (Math.abs(position.x - edge) <= edgeWidth && position.y >= sheet.y - lip && position.y <= sheet.y + sheet.h + lip) return direction;
+    if (closeUp && (sheet.x >= stage.clientWidth || sheet.x + sheet.w <= 0)) continue;
+    const inside = closeUp ? Math.min(54, sheet.w * .20) : Math.min(96, sheet.w * .24);
+    const outside = closeUp ? Math.min(16, inside) : inside;
+    const distance = (edge - position.x) * side;
+    if (distance >= -outside && distance <= inside && position.y >= sheet.y - lip &&
+        position.y <= sheet.y + sheet.h + lip) return direction;
   }
   return 0;
 }
@@ -380,18 +415,18 @@ function smooth(amount) {
   return value * value * (3 - 2 * value);
 }
 
-function startTurn(direction, target) {
+function startTurn(direction, target, dragging = false) {
   if (!current || activeTurn || !settings.motion) return null;
   const side = physicalSide(direction);
   const original = turningLeaves(positioned(current));
   const sheet = side > 0 ? original.at(-1) : original[0];
-  if (zoom > 1 && (sheet.x >= stage.clientWidth || sheet.x + sheet.w <= 0)) return null;
+  if (dragging && zoom > 1 && (sheet.x >= stage.clientWidth || sheet.x + sheet.w <= 0)) return null;
   const next = turningLeaves(positioned(target, readingPan(target)));
   const draw = original.length !== next.length
     ? bookTurn(original, next, side)
     : original.length === 2 ? spreadTurn(original, next, side) : singleTurn(sheet, next[0], side);
   if (!draw) return null;
-  activeTurn = { sheet, side, target, draw, mode: paperMode, progress: 0, tilt: 0, frame: 0 };
+  activeTurn = { sheet, side, target, draw, dragging, mode: paperMode, progress: 0, tilt: 0, frame: 0 };
   draw(0, 0, undefined, performance.now());
   return activeTurn;
 }
@@ -399,7 +434,7 @@ function startTurn(direction, target) {
 function startCurl(paper, side, back, bound) {
   if (!paper.image) return null;
   const options = {
-    width: stage.clientWidth, height: stage.clientHeight, paper, back, side, bound
+    width: stage.clientWidth, height: stage.clientHeight, paper, back, side, bound, zoomed: zoom > 1
   };
   let draw;
   if (paperMode === 'mesh') {
@@ -577,10 +612,13 @@ function settle(turn, complete, duration) {
   const from = turn.progress;
   const tilt = turn.tilt;
   const grip = turn.grip;
+  const automatic = !turn.dragging;
   const center = turn.mode === 'adaptive' && isCenterGrip(turn.side, grip);
-  const corner = turn.mode === 'adaptive' && !center ? cornerGripWeight(turn.side, grip) : 0;
+  const edge = turn.mode === 'adaptive' && grip?.point && !center;
+  const showLanding = automatic || center || edge;
+  const corner = edge ? cornerGripWeight(turn.side, grip) : 0;
   if (center) duration = complete ? 410 : 270;
-  duration += corner * (complete ? 44 : 26);
+  if (edge) duration = complete ? 235 + 16 * corner : 195 + 12 * corner;
   const to = complete ? 1 : 0;
   const speed = (turn.speed ?? 0) * duration / (to - from || 1);
   cancelAnimationFrame(turn.frame);
@@ -590,7 +628,7 @@ function settle(turn, complete, duration) {
     if (activeTurn !== turn) return;
     start ??= time;
     const elapsed = Math.min(1, (time - start) / duration);
-    if (elapsed >= 1 && turn.mode !== 'adaptive') {
+    if (elapsed >= 1 && !automatic && turn.mode !== 'adaptive') {
       endTurn(turn, complete);
       return;
     }
@@ -598,10 +636,11 @@ function settle(turn, complete, duration) {
       complete ? smooth(elapsed) : 1 - (1 - elapsed) ** 3;
     turn.progress = from + (to - from) * eased;
     const relaxed = smooth(elapsed * (turn.mode === 'mesh' ? 1.36 : 1 + .25 * corner));
-    const moving = turn.draw(turn.progress, grip ? tilt * (1 - relaxed) : tilt,
+    const lean = automatic ? smooth(elapsed / .24) : (grip ? 1 - relaxed : 1);
+    const moving = turn.draw(turn.progress, tilt * lean,
       grip && { ...grip, weight: 1 - relaxed, finish: complete, release: elapsed }, time);
-    if (elapsed >= 1 && (!moving || time - start >= duration + 140)) {
-      if (!center || landed || moving) {
+    if (elapsed >= 1 && (!moving || time - start >= duration + (edge ? 85 : 140))) {
+      if (!showLanding || landed || moving) {
         endTurn(turn, complete);
         return;
       }
@@ -680,7 +719,7 @@ function grab(interaction, direction) {
       grab(interaction, interaction.direction);
       return;
     }
-    interaction.turn = startTurn(direction, target);
+    interaction.turn = startTurn(direction, target, true);
     if (interaction.turn) {
       stage.dataset.cursor = 'drag';
       updateGrab(interaction);
@@ -774,12 +813,12 @@ stage.addEventListener('pointermove', event => {
   const { start, last } = gesture;
   const dx = position.x - start.x;
   const dy = position.y - start.y;
-  gesture.moved ||= Math.hypot(dx, dy) > 6;
+  gesture.moved ||= Math.hypot(dx, dy) > (gesture.type === 'pan' && gesture.edge ? 9 : 6);
   gesture.last = position;
   if (gesture.type === 'pan') {
     if (!gesture.moved) return;
     const { edge, panning } = gesture;
-    const inward = !panning && edge && settings.motion && dx * physicalSide(edge) < -Math.abs(dy) * 1.4;
+    const inward = !panning && edge && settings.motion && dx * physicalSide(edge) < -Math.abs(dy) * .66;
     if (!inward) {
       const origin = panning ? last : start;
       pan.x += position.x - origin.x;
