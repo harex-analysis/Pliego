@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/pliego.svg" width="96" height="96" alt="Logotipo de Pliego">
+  <p><img src=".github/pliego.png" width="144" height="144" alt="Logotipo de Pliego"></p>
   <h1>Pliego</h1>
   <p><strong>Lector de cómics y manga para Windows</strong></p>
   <p>Abre <strong>CBR, CBZ, RAR y ZIP</strong> y pasa las páginas con el mouse como en un cómic físico. Organiza tus tomos y retoma la lectura donde la dejaste.</p>
